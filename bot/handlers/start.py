@@ -49,6 +49,7 @@ logger = logging.getLogger("gift_bot.start")
 PHOTO_STATE_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 GENDER_ALLOWED = {"мужской", "женский"}
+HOBBIES_SKIP_WORDS = {"нет", "не знаю", "пропустить", "-", "—"}
 PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Готово")]],
     resize_keyboard=True,
@@ -289,8 +290,7 @@ async def budget(callback: CallbackQuery, state: FSMContext) -> None:
         await _render_screen(state=state, source_message=callback.message, text=texts.ASK_CUSTOM_BUDGET)
     else:
         await state.update_data(budget=normalize_budget(budget_value), budget_min=budget_floor(budget_value))
-        await state.set_state(SurveyStates.photos)
-        await _render_screen(state=state, source_message=callback.message, text=texts.ASK_PHOTOS)
+        await _ask_after_budget(callback.message, state)
     await callback.answer()
 
 
@@ -301,27 +301,49 @@ async def custom_budget(message: Message, state: FSMContext) -> None:
         await _delete_user_input(message)
         return
     await state.update_data(budget=normalize_budget(message.text), budget_min=budget_floor(message.text))
-    await state.set_state(SurveyStates.photos)
-    await _render_screen(state=state, source_message=message, text=texts.ASK_PHOTOS)
-    await message.answer("Когда загрузите фото, нажмите кнопку ниже.", reply_markup=PHOTO_REPLY_KEYBOARD)
+    await _ask_after_budget(message, state)
     await _delete_user_input(message)
+
+
+async def _ask_after_budget(source_message: Message, state: FSMContext) -> None:
+    """Быстрый подбор — без фото, сразу к увлечениям; умный — сначала фото."""
+    data = await state.get_data()
+    if data.get("mode") == "quick":
+        await state.set_state(SurveyStates.hobbies)
+        await _render_screen(state=state, source_message=source_message, text=texts.ASK_HOBBIES)
+        return
+    await state.set_state(SurveyStates.photos)
+    await _render_screen(state=state, source_message=source_message, text=texts.ASK_PHOTOS)
+    await source_message.answer(texts.PHOTO_KEYBOARD_HINT, reply_markup=PHOTO_REPLY_KEYBOARD)
+
+
+async def _replace_photo_status(message: Message, state: FSMContext, text: str) -> None:
+    # Новое сообщение под фото вместо правки старого: иначе «Фото сохранено» оказывается выше самого фото.
+    data = await state.get_data()
+    previous = data.get("photo_status_message_id")
+    if previous:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=previous)
+        except TelegramBadRequest:
+            pass
+    sent = await message.answer(text)
+    await state.update_data(photo_status_message_id=sent.message_id)
 
 
 @router.message(SurveyStates.photos)
 async def collect_photos(message: Message, state: FSMContext) -> None:
     async with PHOTO_STATE_LOCKS[message.from_user.id]:
         data = await state.get_data()
-        mode = data.get("mode", "extended")
         photos_count = int(data.get("photos_count", 0))
         photo_urls = data.get("photo_urls", [])
         if not isinstance(photo_urls, list):
             photo_urls = []
 
         if message.photo:
+            if photos_count >= 6:
+                await _replace_photo_status(message, state, texts.PHOTO_LIMIT)
+                return
             photos_count += 1
-            if photos_count > 6:
-                await _render_screen(state=state, source_message=message, text=texts.PHOTO_LIMIT)
-                photos_count = 6
             try:
                 best_photo = message.photo[-1]
                 tg_file = await message.bot.get_file(best_photo.file_id)
@@ -332,7 +354,7 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
             except Exception as exc:
                 logger.warning("Не удалось получить путь к фото user_id=%s err=%s", message.from_user.id, exc)
             await state.update_data(photos_count=photos_count, photo_urls=photo_urls)
-            await _render_screen(state=state, source_message=message, text=texts.PHOTO_ADDED.format(count=photos_count))
+            await _replace_photo_status(message, state, texts.PHOTO_ADDED.format(count=photos_count))
             return
 
         if (message.text or "").strip().lower() not in {"пропустить", "готово"}:
@@ -340,16 +362,11 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
             await _delete_user_input(message)
             return
 
-        if mode == "quick":
-            await state.update_data(hobbies="")
-            await message.answer(texts.PHOTO_SKIPPED, reply_markup=ReplyKeyboardRemove())
-            await _delete_user_input(message)
-            await _emit_recommendations(message, state)
-            return
-
+        await _delete_user_input(message)
+        if not photos_count:
+            await message.answer(texts.PHOTO_SKIPPED)
         await state.set_state(SurveyStates.hobbies)
         await message.answer(texts.ASK_HOBBIES, reply_markup=ReplyKeyboardRemove())
-        await _delete_user_input(message)
 
 
 @router.message(SurveyStates.hobbies)
@@ -360,7 +377,8 @@ async def hobbies(message: Message, state: FSMContext) -> None:
         await _delete_user_input(message)
         await message.answer("Ожидаю оплату. После успешного платежа сразу продолжу подбор.")
         return
-    hobbies_value = "" if (message.text or "").strip().lower() == "нет" else (message.text or "")
+    raw_hobbies = (message.text or "").strip()
+    hobbies_value = "" if raw_hobbies.lower().strip(".!") in HOBBIES_SKIP_WORDS else raw_hobbies
     if not hobbies_value:
         await message.answer(texts.HOBBIES_SKIPPED)
     await state.update_data(hobbies=hobbies_value)

@@ -12,6 +12,7 @@ from core.logger import setup_logging
 from database.migrations import run_migrations
 from database.models import AffiliateProduct, db, init_db
 from services.catalog_import import to_price_int, upsert_product
+from services.catalog_seed import SEED_PATH, export_seed
 
 
 logger = logging.getLogger("gift_bot.import_manual")
@@ -80,7 +81,9 @@ def _import_file(path: Path) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Импорт товаров, собранных сборщиками из tools/collectors")
-    parser.add_argument("paths", nargs="+", help="JSON-файлы или папки с ними")
+    parser.add_argument(
+        "paths", nargs="*", help="JSON-файлы или папки с ними; без аргументов — только обновить снимок каталога"
+    )
     args = parser.parse_args()
     setup_logging()
 
@@ -88,10 +91,14 @@ def main() -> None:
     init_db(settings.sqlite_path)
     run_migrations(db)
 
-    files = _iter_files(args.paths)
-    total = sum(_import_file(path) for path in files)
-    in_db = AffiliateProduct.select().where(AffiliateProduct.source == SOURCE).count()
-    print(f"Файлов: {len(files)}; импортировано: {total}; ручных товаров в БД: {in_db}")
+    if args.paths:
+        files = _iter_files(args.paths)
+        total = sum(_import_file(path) for path in files)
+        in_db = AffiliateProduct.select().where(AffiliateProduct.source == SOURCE).count()
+        print(f"Файлов: {len(files)}; импортировано: {total}; ручных товаров в БД: {in_db}")
+    exported = export_seed()
+    seed = SEED_PATH.relative_to(Path(__file__).resolve().parent)
+    print(f"Снимок каталога обновлен: {seed} ({exported} товаров) — закоммитьте его, чтобы товары попали на сервер")
 
 
 if __name__ == "__main__":
