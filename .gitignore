@@ -1,0 +1,12 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+gift_bot.db
+*.db
+kaggle.json
+catalog_export.xlsx
+~$*

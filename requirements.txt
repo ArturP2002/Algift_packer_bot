@@ -1,0 +1,4 @@
+peewee
+aiogram
+python-dotenv
+openai
