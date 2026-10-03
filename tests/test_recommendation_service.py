@@ -227,6 +227,106 @@ class ConsoleVariantTests(CatalogTestCase):
         self.assertTrue(all("Pro" not in str(o.get("title") or "") for o in items[0]["links"][0]["offers"]))
 
 
+class NarrativeConsistencyTests(CatalogTestCase):
+    products = (
+        ("tablet", "Планшет HUAWEI MatePad Mini 8+256GB, черный", 49999),
+        ("proj", "Проектор InFocus IN0026SL", 45990),
+    )
+
+    def test_projector_idea_does_not_link_tablet(self) -> None:
+        gpt = FakeGPTService(
+            [
+                idea(
+                    "Проектор InFocus IN0026SL",
+                    ["проектор infocus", "проектор"],
+                    40000,
+                    55000,
+                    category="видео",
+                    pitch="Проектор InFocus отлично дополнит блог и дизайн.",
+                )
+            ],
+            [
+                choice(
+                    0,
+                    ["i0o0"],
+                    why="Проектор InFocus IN0026SL станет отличным дополнением к увлечению дизайном.",
+                )
+            ],
+        )
+        # В кандидатах после поиска могут оказаться оба товара — фильтр типа должен оставить проектор.
+        items = self.run_service(gpt, make_context(budget=60000, budget_min=30000))
+        self.assertEqual(len(items), 1)
+        self.assertIn("Проектор", items[0]["name"])
+        self.assertNotIn("Планшет", items[0]["name"])
+        self.assertIn("проектор", items[0]["reason"].lower())
+        self.assertNotIn("планшет", items[0]["reason"].lower())
+
+    def test_mismatched_selection_text_is_rewritten_to_offer(self) -> None:
+        gpt = FakeGPTService(
+            [
+                idea(
+                    "Планшет HUAWEI MatePad Mini",
+                    ["планшет huawei matepad", "планшет huawei"],
+                    40000,
+                    55000,
+                    category="гаджеты",
+                    pitch="Планшет удобен для блога и рисования.",
+                )
+            ],
+            [
+                choice(
+                    0,
+                    ["i0o0"],
+                    why="Проектор InFocus IN0026SL станет отличным дополнением к её увлечению дизайном.",
+                )
+            ],
+        )
+        items = self.run_service(gpt, make_context(budget=60000, budget_min=30000))
+        self.assertEqual(len(items), 1)
+        self.assertIn("HUAWEI", items[0]["name"])
+        self.assertIn("планшет", items[0]["reason"].lower())
+        self.assertNotIn("проектор", items[0]["reason"].lower())
+        self.assertNotIn("InFocus", items[0]["reason"])
+
+    def test_brand_only_name_uses_keywords_type_filter(self) -> None:
+        gpt = FakeGPTService(
+            [
+                idea(
+                    "InFocus IN0026SL",
+                    ["проектор infocus", "проектор"],
+                    40000,
+                    55000,
+                    category="видео",
+                    pitch="InFocus дополнит блог.",
+                )
+            ],
+            [choice(0, ["i0o0"], why="Проектор InFocus IN0026SL подойдёт для дизайна.")],
+        )
+        items = self.run_service(gpt, make_context(budget=60000, budget_min=30000))
+        self.assertEqual(len(items), 1)
+        self.assertIn("Проектор", items[0]["name"])
+        self.assertNotIn("Планшет", items[0]["name"])
+
+    def test_mismatched_pitch_is_fixed_before_reason(self) -> None:
+        gpt = FakeGPTService(
+            [
+                idea(
+                    "Планшет HUAWEI MatePad Mini",
+                    ["планшет huawei", "планшет"],
+                    40000,
+                    55000,
+                    category="гаджеты",
+                    pitch="Проектор InFocus идеально дополнит её блог.",
+                )
+            ],
+            [choice(0, ["i0o0"], why="Планшет HUAWEI MatePad Mini удобен для рисования.")],
+        )
+        items = self.run_service(gpt, make_context(budget=60000, budget_min=30000))
+        self.assertEqual(len(items), 1)
+        self.assertNotIn("проектор", items[0]["reason"].lower())
+        self.assertNotIn("InFocus", items[0]["reason"])
+
+
 class PromptTests(CatalogTestCase):
     products = (("book", "Книга про танцы", 6500),)
 

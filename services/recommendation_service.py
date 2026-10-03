@@ -32,13 +32,16 @@ _PRODUCT_TYPE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("колонка", ("колонк", "акустик", "саундбар", "speaker")),
     ("наушники", ("наушн", "гарнитур", "earbuds", "airpods", "buds")),
     ("консоль", ("playstation", "xbox", "nintendo", "приставк", "консол", "ps5", "ps4")),
+    ("проектор", ("проектор", "projector", "infocus")),
+    ("планшет", ("планшет", "ipad", "tablet", "matepad")),
     ("пылесос", ("пылесос", "робот-пылесос")),
     ("блендер", ("блендер", "миксер", "комбайн")),
     ("часы", ("часов", "watch", "smartwatch")),
-    ("планшет", ("планшет", "ipad", "tablet")),
     ("ноутбук", ("ноутбук", "laptop", "macbook")),
     ("книга", ("книг", "роман", "детектив")),
     ("парфюм", ("парфюм", "духи", "туалетн", "одеколон")),
+    ("фотоаппарат", ("фотоаппарат", "камер", "camera", "instax")),
+    ("фен", ("стайлер", "выпрямител", "плойк", "фен для волос")),
 )
 
 _EVENT_LABELS = {
@@ -116,9 +119,10 @@ _SELECTION_SCHEMA: dict[str, Any] = {
 _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультант по подаркам. Предложи ровно {_IDEAS_REQUESTED} идей подарков для человека из профиля.
 
 Правила:
-- Только физические товары, которые реально есть в нашем каталоге (см. блок «Ориентиры каталога»). Не предлагай бренды и типы товаров, которых там нет.
+- Только физические товары, которые реально есть в нашем каталоге (см. блок «Ориентиры каталога»). Не предлагай бренды и типы товаров, которых там нет. Предпочитай названия, близкие к примерам из ориентиров.
 - Каждая идея должна находиться в каталоге по keywords. Если не уверен, что товар есть — выбери другую идею из ориентиров.
 - price_min и price_max — реальная рыночная цена товара в рублях. Не подгоняй её под бюджет: если идея не помещается в бюджет, замени её другой.
+- Учитывай возраст и статус получателя: ребёнку/подростку — возрастные товары; взрослому — не детские. Для пары/жены/мужа — уместные по отношениям подарки.
 - Разные бюджеты = разные классы товаров, а не та же модель дороже/дешевле:
   · 1–3 тыс. ₽ — мелкие полезные вещи, книги, уход, аксессуары начального уровня;
   · 3–5 тыс. ₽ — средний сегмент гаджетов/ухода/игр;
@@ -127,24 +131,27 @@ _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультан
   Не предлагай «ту же колонку / те же наушники другого поколения» только из‑за другого бюджета.
 - Состав подборки: 2-3 идеи по увлечениям получателя, 1 практичная вещь на каждый день, 1 «вау»-подарок (запоминающийся, немного неожиданный), 1 уютная или эмоциональная вещь. Все идеи — разных категорий и типов товаров: не больше {_MAX_PER_CATEGORY} идеи одной категории. Три кофемашины или две колонки в одной выдаче — недопустимо.
 - category — одно-два слова: «аудио», «настольные игры», «уход за собой». Для похожих товаров используй одну и ту же category.
-- name — конкретный товар, как в каталоге магазина: тип + бренд или модель, если уместно («Портативная колонка JBL Flip 6»), а не абстракция («Что-то для музыки»).
-- keywords — 2 запроса для поиска по каталогу магазина, по 2-4 слова: тип товара + бренд/модель, без прилагательных-пояснений, назначения и получателя. Первый — точный, второй — общий («колонка jbl flip 6», затем «портативная колонка»).
-- pitch — 1-2 предложения: чем идея цепляет именно этого человека, со ссылкой на его увлечения, возраст или повод.
-  Хорошо: «Он каждые выходные в походах — колонка с защитой от воды переживет и дождь, и костер, а музыка у палатки станет традицией».
-  Плохо: «Отличный подарок, который порадует любого человека и подойдет к празднику».
-- Если есть наблюдения по фото — это сигналы о стиле и интересах. Не предлагай то, что у человека уже есть на фото (одежда, украшения, гаджеты, аксессуары); предлагай то, что дополнит его образ жизни.
+- name — обязательно тип товара + бренд/модель словами из каталога: «Проектор InFocus …», «Планшет HUAWEI …», «Портативная колонка JBL Flip 6». Нельзя название из одного бренда/модели без типа («InFocus IN0026SL», «MatePad Mini»).
+- keywords — 2 запроса для поиска, по 2-4 слова. Оба обязаны содержать тип товара. Первый — точный (тип + бренд/модель), второй — чуть общий, но всё ещё с типом («проектор infocus», затем «проектор infocus in0026sl» или «портативный проектор»). Нельзя второй запрос без типа («для блога», «гаджет»). Тип в keywords обязан совпадать с типом в name.
+- pitch — 1-2 предложения про ЭТУ же модель из name (тот же тип и бренд), со ссылкой на увлечения, возраст или повод. Нельзя в pitch писать про другой товар или другой бренд.
+  Хорошо: «Он каждые выходные в походах — колонка с защитой от воды переживет и дождь, и костер».
+  Плохо: «Отличный подарок, который порадует любого» или pitch про проектор при name про планшет.
+- Внутри одной идеи name, keywords и pitch обязаны описывать один и тот же тип и бренд. Смешивать проектор и планшет, колонку и наушники — запрещено.
+- Если есть наблюдения по фото — это сигналы о стиле и интересах. Не предлагай то, что у человека уже есть на фото; предлагай то, что дополнит образ жизни.
 - Если в профиле есть список «не предлагай снова» — избегай этих товаров, брендов и близких аналогов той же линейки."""
 
-_SELECTION_INSTRUCTIONS = f"""Ты — эксперт по подаркам. Тебе дан профиль получателя и идеи подарков с товарами из каталога магазинов.
+_SELECTION_INSTRUCTIONS = f"""Ты — эксперт по подаркам. Тебе дан профиль получателя и для каждой идеи — список реальных товаров из каталога.
 
 Для каждой идеи верни один объект с ее idea_index:
-- offer_ids — до {_MAX_CHOSEN_OFFERS} товаров, которые действительно соответствуют идее и подходят получателю, от лучшего к худшему. Товар обязан совпадать с конкретной моделью/вариантом из названия идеи (например Slim ≠ Pro, Flip ≠ Charge). Если ни один не подходит (другая модель, другой тип, аксессуар вместо товара, детский вместо взрослого) — пустой список. Используй только id из списка товаров этой идеи.
-- why_for_person — 2-3 предложения: почему это подойдет именно этому человеку, со ссылкой на его увлечения, возраст, стиль. Пиши про ту модель, которую выбрал в offer_ids; не выдумывай характеристики, в которых не уверен.
-- occasion_fit — 1 предложение: почему подарок уместен к поводу и отношениям с получателем.
-- practical_value — 1 предложение: как человек будет этим пользоваться.
-- presentation_tip — 1 короткое предложение: как вручить или чем дополнить подарок.
+- Источник истины — список «Товары». Поле «Черновик идеи» может быть неточным: если оно противоречит списку товаров, игнорируй черновик.
+- offer_ids — до {_MAX_CHOSEN_OFFERS} id ТОЛЬКО из «Товары» этой же идеи. Тип товара должен совпадать с названием идеи (проектор ≠ планшет, колонка ≠ наушники). Модель/вариант тоже (Slim ≠ Pro). Если подходящих нет — пустой список. Чужие idea_index и товары других идей запрещены.
+- why_for_person, occasion_fit, practical_value, presentation_tip — только про выбранные offer_ids: называй товар так же, как в каталоге. Запрещено упоминать другой тип, другой бренд или модель не из offer_ids.
+- why_for_person — 2-3 предложения.
+- occasion_fit — 1 предложение.
+- practical_value — 1 предложение про использование именно этого товара.
+- presentation_tip — 1 короткое предложение про вручение именно этого товара.
 
-Обращайся к дарителю на «вы», пиши живым языком, без канцелярита и общих фраз вроде «отличный выбор» или «подойдет каждому». Цену не упоминай."""
+Обращайся к дарителю на «вы», живым языком, без канцелярита. Цену не упоминай."""
 
 
 def event_label(event: str) -> str:
@@ -285,7 +292,7 @@ class RecommendationService:
                     item["keywords"], min_price=low, max_price=high, max_offers=_CANDIDATES_PER_IDEA
                 )
                 offers = (links[0].get("offers") if links else None) or []
-                offers = self._filter_offers_for_idea(item["name"], offers)
+                offers = self._filter_offers_for_idea(item["name"], offers, keywords=item.get("keywords"))
                 if not offers:
                     self._logger.info("Отсеиваю вариант '%s': нет товара в каталоге", item["name"])
                     rejected_names.append(item["name"])
@@ -317,13 +324,16 @@ class RecommendationService:
                 # Пустой выбор модели при наличии кандидатов — берём топ из каталога, идею без ссылок не показываем.
                 if not offers:
                     offers = item_candidates[:_MAX_CHOSEN_OFFERS]
-            offers = self._filter_offers_for_idea(idea_name, offers, limit=_MAX_CHOSEN_OFFERS)
+            offers = self._filter_offers_for_idea(
+                idea_name, offers, keywords=item.get("keywords"), limit=_MAX_CHOSEN_OFFERS
+            )
             if not offers:
                 self._logger.info("Отсеиваю вариант '%s': нет офферов после выбора", idea_name)
                 continue
             primary = offers[0]
-            # Название и текст должны совпадать с реальной ссылкой (Slim ≠ Pro).
+            # Название, ссылки и текст объяснения — всегда про один и тот же товар из каталога.
             item["name"] = self._display_name_from_offer(primary, fallback=idea_name)
+            choice = self._align_narrative_with_offer(item, choice, primary)
             priced = [int(offer.get("price") or 0) for offer in offers if int(offer.get("price") or 0) > 0]
             item["price_estimate"] = min(priced, key=lambda value: abs(value - context.budget)) if priced else int(item["price_estimate"])
             price_note = self._price_note(item["price_estimate"], context.budget, live=True)
@@ -359,9 +369,12 @@ class RecommendationService:
         """Шаг 2: модель выбирает конкретные товары из найденных и объясняет выбор. None — шаг не удался."""
         blocks = []
         for index, item in enumerate(ideas):
-            lines = [f"Идея {index}: {item['name']}", f"Зачем: {item['pitch']}"]
+            lines = [
+                f"Идея {index}: {item['name']}",
+                f"Черновик идеи (может быть неточным, не противоречь списку товаров): {item['pitch']}",
+            ]
             if item["candidates"]:
-                lines.append("Товары:")
+                lines.append("Товары (источник истины):")
                 for position, offer in enumerate(item["candidates"]):
                     store = market_label(str(offer.get("marketplace") or ""))
                     title = str(offer.get("title") or "")[:120]
@@ -377,6 +390,7 @@ class RecommendationService:
                 prompt=prompt,
                 schema=_SELECTION_SCHEMA,
                 max_tokens=3000,
+                temperature=0.2,
             )
         except Exception as exc:  # pragma: no cover - runtime/network guard
             self._logger.warning("Шаг выбора товаров не удался, показываю результаты поиска: %s", exc)
@@ -519,41 +533,67 @@ class RecommendationService:
         return kept
 
     @classmethod
-    def _product_type_family(cls, item: dict[str, Any]) -> str:
-        haystack_parts = [str(item.get("name", "")), str(item.get("category", ""))]
-        keywords = item.get("keywords", [])
-        if isinstance(keywords, list):
-            haystack_parts.extend(str(k) for k in keywords)
-        haystack = " ".join(haystack_parts).lower()
+    def _family_from_text(cls, text: str) -> str:
+        haystack = (text or "").lower()
         for family, markers in _PRODUCT_TYPE_FAMILIES:
             if any(marker in haystack for marker in markers):
                 return family
         return ""
 
     @classmethod
+    def _product_type_family(cls, item: dict[str, Any]) -> str:
+        haystack_parts = [str(item.get("name", "")), str(item.get("category", ""))]
+        keywords = item.get("keywords", [])
+        if isinstance(keywords, list):
+            haystack_parts.extend(str(k) for k in keywords)
+        return cls._family_from_text(" ".join(haystack_parts))
+
+    @classmethod
     def _filter_offers_for_idea(
-        cls, idea_name: str, offers: list[dict[str, Any]], *, limit: int | None = None
+        cls,
+        idea_name: str,
+        offers: list[dict[str, Any]],
+        *,
+        keywords: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Убираем офферы другой модификации (Slim vs Pro) и поднимаем точные совпадения."""
+        """Оставляем только офферы того же типа/модификации, что идея (проектор≠планшет, Slim≠Pro)."""
         if not offers:
             return []
+        idea_family = cls._family_from_text(idea_name)
+        if not idea_family and keywords:
+            idea_family = cls._family_from_text(" ".join(str(k) for k in keywords))
+        pool: list[dict[str, Any]] = []
+        for offer in offers:
+            title = str(offer.get("title") or "")
+            offer_family = cls._family_from_text(title)
+            # Если тип идеи известен — чужой тип отбрасываем.
+            if idea_family and offer_family and idea_family != offer_family:
+                continue
+            # Если у идеи тип не распознан, а у оффера распознан другой тип из keywords — тоже нет.
+            if not idea_family and offer_family and keywords:
+                kw_family = cls._family_from_text(" ".join(str(k) for k in keywords))
+                if kw_family and kw_family != offer_family:
+                    continue
+            pool.append(offer)
+        if not pool:
+            return []
+
         idea_variants = cls._variant_tokens(idea_name)
         if idea_variants:
             matched: list[dict[str, Any]] = []
-            for offer in offers:
+            for offer in pool:
                 title = str(offer.get("title") or "")
                 offer_variants = cls._variant_tokens(title)
                 if offer_variants and cls._variants_conflict(idea_variants, offer_variants):
                     continue
-                # Если у идеи есть вариант (slim), предпочитаем офферы с тем же маркером.
                 if offer_variants and not (idea_variants & offer_variants):
                     continue
                 matched.append(offer)
             if not matched:
                 return []
             pool = matched
-        else:
-            pool = list(offers)
+
         idea_tokens = set(re.findall(r"[a-zа-яё0-9]{3,}", idea_name.lower()))
         pool.sort(
             key=lambda offer: -sum(
@@ -563,6 +603,75 @@ class RecommendationService:
         if limit is not None:
             return pool[:limit]
         return pool
+
+    def _align_narrative_with_offer(
+        self,
+        item: dict[str, Any],
+        choice: dict[str, Any] | None,
+        offer: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Гарантирует, что текст объяснения про тот же товар, что в ссылке/заголовке."""
+        offer_title = self._display_name_from_offer(offer, fallback=item["name"])
+        offer_family = self._family_from_text(str(offer.get("title") or offer_title))
+        offer_brands = self._latin_brands(str(offer.get("title") or offer_title))
+        pitch = str(item.get("pitch") or "")
+        pitch_family = self._family_from_text(pitch)
+        pitch_brands = self._latin_brands(pitch)
+        if (offer_family and pitch_family not in ("", offer_family)) or (
+            offer_brands and pitch_brands and not (offer_brands & pitch_brands)
+        ):
+            item["pitch"] = (
+                f"{offer_title} хорошо дополняет интересы получателя и будет уместным подарком к поводу."
+            )
+            self._logger.info(
+                "Переписал pitch для '%s': исходный текст был про другой товар",
+                offer_title,
+            )
+
+        if choice:
+            narrative = " ".join(
+                str(choice.get(field) or "")
+                for field in ("why_for_person", "occasion_fit", "practical_value", "presentation_tip")
+            )
+            narrative_family = self._family_from_text(narrative)
+            narrative_brands = self._latin_brands(narrative)
+            type_mismatch = bool(offer_family and narrative_family and narrative_family != offer_family)
+            brand_mismatch = bool(offer_brands and narrative_brands and not (offer_brands & narrative_brands))
+            # В тексте есть чужой тип из известных семейств, которого нет у оффера.
+            foreign_types = {
+                family
+                for family, markers in _PRODUCT_TYPE_FAMILIES
+                if family != offer_family and any(marker in narrative.lower() for marker in markers)
+            }
+            if type_mismatch or brand_mismatch or foreign_types:
+                self._logger.info(
+                    "Сбрасываю текст выбора для '%s': несогласованность типа/бренда",
+                    offer_title,
+                )
+                choice = None
+
+        if choice:
+            return choice
+        return {
+            "why_for_person": item.get("pitch")
+            or f"{offer_title} — практичный подарок с учётом интересов и возраста получателя.",
+            "occasion_fit": "Такой подарок уместен к поводу и покажет внимание к вкусам человека.",
+            "practical_value": f"{offer_title} можно использовать регулярно в повседневной жизни.",
+            "presentation_tip": "Вручите в красивой упаковке и коротко расскажите, почему выбрали именно это.",
+        }
+
+    @staticmethod
+    def _latin_brands(text: str) -> set[str]:
+        """Латинские токены бренда/модели длиной ≥3, без общих слов."""
+        generic = {
+            "pro", "air", "max", "mini", "plus", "ultra", "lite", "neo", "the", "and", "for", "gb", "tb",
+            "wifi", "oled", "led", "usb", "rgb", "slim", "edition", "black", "white",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-z][a-z0-9]{2,}", (text or "").lower())
+            if token not in generic
+        }
 
     @classmethod
     def _variant_tokens(cls, text: str) -> set[str]:
@@ -609,6 +718,13 @@ class RecommendationService:
             if self._is_non_marketplace_idea(item):
                 self._logger.info("Отсеиваю вариант '%s': не товар маркетплейса", item.get("name", "gift"))
                 continue
+            name_family = self._family_from_text(name)
+            pitch_family = self._family_from_text(str(item.get("pitch") or ""))
+            if name_family and pitch_family and name_family != pitch_family:
+                item["pitch"] = (
+                    f"{name} хорошо дополняет интересы получателя и будет уместным подарком к поводу."
+                )
+                self._logger.info("Исправил pitch для '%s': тип в тексте не совпадал с названием", name)
             min_price, max_price = item["price_range"]
             item["price_estimate"] = int((min_price + max_price) / 2)
             kept.append(item)
