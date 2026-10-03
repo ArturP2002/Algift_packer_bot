@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 import logging
 import re
@@ -15,6 +15,7 @@ _IDEAS_SHOWN = 6
 _MAX_PER_CATEGORY = 2
 _CANDIDATES_PER_IDEA = 8
 _MAX_CHOSEN_OFFERS = 3
+_CATALOG_RETRY_ROUNDS = 3
 # Лимит сообщения Telegram 4096 символов; запас — на название идеи и подсказку под текстом.
 _REASON_LIMIT = 3700
 
@@ -93,8 +94,15 @@ _SELECTION_SCHEMA: dict[str, Any] = {
 _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультант по подаркам. Предложи ровно {_IDEAS_REQUESTED} идей подарков для человека из профиля.
 
 Правила:
-- Только физические товары из обычных магазинов: электроника, бытовая техника, книги, игры, косметика, товары для хобби, детские товары. Никаких услуг, курсов, сертификатов, впечатлений, поездок, билетов и подписок.
+- Только физические товары, которые реально есть в нашем каталоге (см. блок «Ориентиры каталога»). Не предлагай бренды и типы товаров, которых там нет.
+- Каждая идея должна находиться в каталоге по keywords. Если не уверен, что товар есть — выбери другую идею из ориентиров.
 - price_min и price_max — реальная рыночная цена товара в рублях. Не подгоняй её под бюджет: если идея не помещается в бюджет, замени её другой.
+- Разные бюджеты = разные классы товаров, а не та же модель дороже/дешевле:
+  · 1–3 тыс. ₽ — мелкие полезные вещи, книги, уход, аксессуары начального уровня;
+  · 3–5 тыс. ₽ — средний сегмент гаджетов/ухода/игр;
+  · 5–10 тыс. ₽ — заметные гаджеты и наборы;
+  · 10–20+ тыс. ₽ — премиальные или крупные вещи.
+  Не предлагай «ту же колонку / те же наушники другого поколения» только из‑за другого бюджета.
 - Состав подборки: 2-3 идеи по увлечениям получателя, 1 практичная вещь на каждый день, 1 «вау»-подарок (запоминающийся, немного неожиданный), 1 уютная или эмоциональная вещь. Не больше {_MAX_PER_CATEGORY} идей одной категории.
 - category — одно-два слова: «аудио», «настольные игры», «уход за собой».
 - name — конкретный товар, как в каталоге магазина: тип + бренд или модель, если уместно («Портативная колонка JBL Flip 6»), а не абстракция («Что-то для музыки»).
@@ -102,7 +110,8 @@ _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультан
 - pitch — 1-2 предложения: чем идея цепляет именно этого человека, со ссылкой на его увлечения, возраст или повод.
   Хорошо: «Он каждые выходные в походах — колонка с защитой от воды переживет и дождь, и костер, а музыка у палатки станет традицией».
   Плохо: «Отличный подарок, который порадует любого человека и подойдет к празднику».
-- Если есть наблюдения по фото — это сигналы о стиле и интересах. Не предлагай то, что у человека уже есть на фото (одежда, украшения, гаджеты, аксессуары); предлагай то, что дополнит его образ жизни."""
+- Если есть наблюдения по фото — это сигналы о стиле и интересах. Не предлагай то, что у человека уже есть на фото (одежда, украшения, гаджеты, аксессуары); предлагай то, что дополнит его образ жизни.
+- Если в профиле есть список «не предлагай снова» — избегай этих товаров, брендов и близких аналогов той же линейки."""
 
 _SELECTION_INSTRUCTIONS = f"""Ты — эксперт по подаркам. Тебе дан профиль получателя и идеи подарков с товарами из каталога магазинов.
 
@@ -152,6 +161,7 @@ class RecommendationContext:
     photos_count: int = 0
     photo_insights: str = ""
     budget_min: int = 0
+    exclude_names: list[str] = field(default_factory=list)
 
     def price_window(self) -> tuple[int, int]:
         """Допустимая цена подарка: вся выбранная вилка бюджета плюс 10% сверху."""
@@ -203,48 +213,69 @@ class RecommendationService:
 
     async def get_recommendations(self, context: RecommendationContext) -> list[dict[str, Any]]:
         payload = context.__dict__.copy()
+        payload["exclude_names"] = sorted({str(name).strip().lower() for name in context.exclude_names if str(name).strip()})
         cache_key = self._cache.make_key(payload)
         cached = self._cache.get(cache_key)
         if cached:
             return cached
 
-        profile = self._describe_recipient(context)
-        try:
-            result = await self._gpt.complete_json(
-                name="gift_ideas",
-                instructions=_IDEAS_INSTRUCTIONS,
-                prompt=profile,
-                schema=_IDEAS_SCHEMA,
-                max_tokens=2500,
-            )
-        except Exception as exc:  # pragma: no cover - runtime/network guard
-            self._logger.error("Модель недоступна, подбор не выполнен: %s", exc)
-            raise RecommendationUnavailable(str(exc)) from exc
-        raw_ideas = result.get("ideas") if isinstance(result.get("ideas"), list) else []
-        self._logger.info("Модель вернула %s сырых идей", len(raw_ideas))
-
-        ideas = self._normalize_items(raw_ideas, context)
-        ideas = self._post_filter(ideas, context.photo_insights)
-        ideas = self._limit_categories(ideas)
-
         low, high = context.price_window()
-        candidates: list[dict[str, Any]] = []
-        for item in ideas:
-            links = self._products.resolve_links(
-                item["keywords"], min_price=low, max_price=high, max_offers=_CANDIDATES_PER_IDEA
-            )
-            item["candidates"] = (links[0].get("offers") if links else None) or []
-            item["search_query"] = links[0]["keyword"] if links else ""
-            if not item["candidates"] and not low <= item["price_estimate"] <= high:
-                # Цену знает только модель, и она вне бюджета — идея не подходит.
-                self._logger.info(
-                    "Отсеиваю вариант '%s': оценка %s ₽ вне бюджета %s-%s ₽", item["name"], item["price_estimate"], low, high
+        catalog_hints = self._products.catalog_hints(min_price=low, max_price=high)
+        profile = self._describe_recipient(context, catalog_hints=catalog_hints)
+
+        linked: list[dict[str, Any]] = []
+        rejected_names: list[str] = []
+        seen_names: set[str] = {name.lower() for name in context.exclude_names if name.strip()}
+
+        for round_index in range(_CATALOG_RETRY_ROUNDS):
+            needed = _IDEAS_SHOWN - len(linked)
+            if needed <= 0:
+                break
+            prompt = profile
+            if rejected_names or linked:
+                prompt += "\n\n" + self._retry_prompt_block(linked, rejected_names, needed)
+            try:
+                result = await self._gpt.complete_json(
+                    name="gift_ideas",
+                    instructions=_IDEAS_INSTRUCTIONS,
+                    prompt=prompt,
+                    schema=_IDEAS_SCHEMA,
+                    max_tokens=2500,
                 )
-                continue
-            candidates.append(item)
-        # Идеи с товарами — выше, внутри групп сохраняем порядок модели.
-        candidates.sort(key=lambda item: not item["candidates"])
-        candidates = candidates[:_IDEAS_SHOWN]
+            except Exception as exc:  # pragma: no cover - runtime/network guard
+                if linked:
+                    self._logger.warning("Добор идей не удался на раунде %s, продолжаю с %s: %s", round_index, len(linked), exc)
+                    break
+                self._logger.error("Модель недоступна, подбор не выполнен: %s", exc)
+                raise RecommendationUnavailable(str(exc)) from exc
+
+            raw_ideas = result.get("ideas") if isinstance(result.get("ideas"), list) else []
+            self._logger.info("Раунд %s: модель вернула %s сырых идей", round_index + 1, len(raw_ideas))
+            ideas = self._normalize_items(raw_ideas, context)
+            ideas = self._post_filter(ideas, context.photo_insights, exclude_names=seen_names | {n.lower() for n in rejected_names})
+            ideas = self._limit_categories(ideas, already=linked)
+
+            for item in ideas:
+                name_key = item["name"].lower()
+                if name_key in seen_names:
+                    continue
+                links = self._products.resolve_links(
+                    item["keywords"], min_price=low, max_price=high, max_offers=_CANDIDATES_PER_IDEA
+                )
+                offers = (links[0].get("offers") if links else None) or []
+                if not offers:
+                    self._logger.info("Отсеиваю вариант '%s': нет товара в каталоге", item["name"])
+                    rejected_names.append(item["name"])
+                    seen_names.add(name_key)
+                    continue
+                item["candidates"] = offers
+                item["search_query"] = links[0]["keyword"]
+                linked.append(item)
+                seen_names.add(name_key)
+                if len(linked) >= _IDEAS_SHOWN:
+                    break
+
+        candidates = linked[:_IDEAS_SHOWN]
         if not candidates:
             return []
 
@@ -259,26 +290,37 @@ class RecommendationService:
             else:
                 by_id = {f"i{index}o{position}": offer for position, offer in enumerate(item_candidates)}
                 offers = [by_id[offer_id] for offer_id in choice["offer_ids"] if offer_id in by_id]
-            priced = [int(offer.get("price") or 0) for offer in offers if int(offer.get("price") or 0) > 0]
-            if priced:
-                item["price_estimate"] = min(priced, key=lambda value: abs(value - context.budget))
-                price_note = self._price_note(item["price_estimate"], context.budget, live=True)
-            elif low <= item["price_estimate"] <= high:
-                price_note = self._price_note(
-                    item["price_estimate"], context.budget, live=False, price_range=tuple(item["price_range"])
-                )
-            else:
-                self._logger.info("Отсеиваю вариант '%s': модель не выбрала товар, а оценка вне бюджета", item["name"])
+                # Пустой выбор модели при наличии кандидатов — берём топ из каталога, идею без ссылок не показываем.
+                if not offers:
+                    offers = item_candidates[:_MAX_CHOSEN_OFFERS]
+            if not offers:
+                self._logger.info("Отсеиваю вариант '%s': нет офферов после выбора", item.get("name", "gift"))
                 continue
-            item["links"] = [{"keyword": search_query, "offers": offers}] if offers else []
+            priced = [int(offer.get("price") or 0) for offer in offers if int(offer.get("price") or 0) > 0]
+            item["price_estimate"] = min(priced, key=lambda value: abs(value - context.budget)) if priced else int(item["price_estimate"])
+            price_note = self._price_note(item["price_estimate"], context.budget, live=True)
+            item["links"] = [{"keyword": search_query, "offers": offers}]
             item["fits_budget"] = item["price_estimate"] <= context.budget
             item["reason"] = self._compose_reason(item, choice, price_note)
             selected.append(item)
-        selected.sort(key=lambda item: not item["links"])
 
         if selected:
             self._cache.set(cache_key, selected)
         return selected
+
+    @staticmethod
+    def _retry_prompt_block(accepted: list[dict[str, Any]], rejected: list[str], needed: int) -> str:
+        lines = [
+            f"Нужно ещё {needed} идей, которых ещё нет в принятом списке.",
+            "Предлагай только товары, которые находятся в каталоге (см. ориентиры).",
+        ]
+        if accepted:
+            lines.append("Уже приняты (не повторяй и не предлагай близкие аналоги той же линейки):")
+            lines.extend(f"- {item['name']}" for item in accepted)
+        if rejected:
+            lines.append("Эти идеи не нашлись в каталоге — предложи другие:")
+            lines.extend(f"- {name}" for name in rejected[-20:])
+        return "\n".join(lines)
 
     async def _select_offers(
         self, profile: str, ideas: list[dict[str, Any]]
@@ -361,7 +403,7 @@ class RecommendationService:
         return f"💡 {label}: {value} (чуть выше бюджета)"
 
     @staticmethod
-    def _describe_recipient(c: RecommendationContext) -> str:
+    def _describe_recipient(c: RecommendationContext, *, catalog_hints: str = "") -> str:
         low, high = c.price_window()
         gender = _GENDER_LABELS.get(c.gender, c.gender)
         lines = [
@@ -374,6 +416,11 @@ class RecommendationService:
         if c.photo_insights.strip():
             lines.append(f"Наблюдения по фото:\n{c.photo_insights.strip()}")
         lines.append(f"Бюджет: {_rub(low)}–{_rub(c.budget)} ₽ (допустимо до {_rub(high)} ₽).")
+        if c.exclude_names:
+            lines.append("Не предлагай снова (недавние или отклонённые идеи):")
+            lines.extend(f"- {name}" for name in c.exclude_names[:24])
+        if catalog_hints.strip():
+            lines.append(catalog_hints.strip())
         return "\n".join(lines)
 
     def _normalize_items(self, items: list[Any], context: RecommendationContext) -> list[dict[str, Any]]:
@@ -401,8 +448,14 @@ class RecommendationService:
             )
         return normalized
 
-    def _limit_categories(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _limit_categories(
+        self, items: list[dict[str, Any]], *, already: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
         counts: dict[str, int] = {}
+        for item in already or []:
+            category = item.get("category") or ""
+            if category:
+                counts[category] = counts.get(category, 0) + 1
         kept: list[dict[str, Any]] = []
         for item in items:
             category = item.get("category") or ""
@@ -413,10 +466,21 @@ class RecommendationService:
             kept.append(item)
         return kept
 
-    def _post_filter(self, items: list[dict[str, Any]], photo_insights: str) -> list[dict[str, Any]]:
+    def _post_filter(
+        self,
+        items: list[dict[str, Any]],
+        photo_insights: str,
+        *,
+        exclude_names: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         blocked_terms = self._extract_blocked_terms_from_photo(photo_insights)
+        excluded = {name.lower() for name in (exclude_names or set()) if name}
         kept: list[dict[str, Any]] = []
         for item in items:
+            name = str(item.get("name", "")).strip()
+            if name.lower() in excluded or self._matches_excluded_name(item, excluded):
+                self._logger.info("Отсеиваю вариант '%s': уже предлагали или отклонили", name)
+                continue
             if self._contains_blocked_photo_object(item, blocked_terms):
                 self._logger.info("Отсеиваю вариант '%s': предмет уже виден на фото", item.get("name", "gift"))
                 continue
@@ -427,6 +491,21 @@ class RecommendationService:
             item["price_estimate"] = int((min_price + max_price) / 2)
             kept.append(item)
         return kept
+
+    @staticmethod
+    def _matches_excluded_name(item: dict[str, Any], excluded: set[str]) -> bool:
+        if not excluded:
+            return False
+        haystack_parts = [str(item.get("name", ""))]
+        keywords = item.get("keywords", [])
+        if isinstance(keywords, list):
+            haystack_parts.extend(str(k) for k in keywords)
+        haystack = " ".join(haystack_parts).lower()
+        for name in excluded:
+            tokens = [token for token in re.findall(r"[a-zа-яё0-9]{3,}", name.lower()) if token]
+            if tokens and all(token in haystack for token in tokens[:3]):
+                return True
+        return False
 
     @staticmethod
     def _normalize_price_range(raw_range: Any, budget: int) -> list[int]:

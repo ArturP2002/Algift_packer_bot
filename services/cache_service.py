@@ -20,14 +20,22 @@ class CacheService:
         self._stats = CacheStats()
 
     def make_key(self, payload: dict[str, Any]) -> str:
+        exclude = payload.get("exclude_names") or []
+        if isinstance(exclude, str):
+            exclude_list = [exclude]
+        else:
+            exclude_list = [str(item).strip().lower() for item in exclude if str(item).strip()]
         normalized = {
             "age": payload.get("age"),
             "gender": payload.get("gender"),
             "event": payload.get("event"),
             "relation": payload.get("relation"),
             "budget": payload.get("budget"),
+            "budget_min": payload.get("budget_min"),
             "hobbies": (payload.get("hobbies") or "").strip().lower(),
             "mode": payload.get("mode", "extended"),
+            "photo_insights": (payload.get("photo_insights") or "").strip().lower()[:500],
+            "exclude_names": sorted(set(exclude_list)),
         }
         raw = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()

@@ -92,6 +92,7 @@ class SurveyFlowTests(unittest.TestCase):
             await state.update_data(mode="extended", photo_status_message_id=77)
             message = make_message(photo=[SimpleNamespace(file_id="f1")])
             message.bot.get_file = AsyncMock(return_value=SimpleNamespace(file_path="photos/1.jpg"))
+            message.bot.container = SimpleNamespace(gpt_service=SimpleNamespace(photo_has_face=AsyncMock(return_value=True)))
             await start.collect_photos(message, state)
             return state, message
 
@@ -100,6 +101,21 @@ class SurveyFlowTests(unittest.TestCase):
         message.bot.edit_message_text.assert_not_awaited()
         self.assertEqual(sent_texts(message), [start.texts.PHOTO_ADDED.format(count=1)])
         self.assertEqual(asyncio.run(state.get_data())["photo_status_message_id"], 100)
+
+    def test_photo_without_face_is_rejected(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.photos)
+            await state.update_data(mode="extended")
+            message = make_message(photo=[SimpleNamespace(file_id="f1")])
+            message.bot.get_file = AsyncMock(return_value=SimpleNamespace(file_path="photos/1.jpg"))
+            message.bot.container = SimpleNamespace(gpt_service=SimpleNamespace(photo_has_face=AsyncMock(return_value=False)))
+            await start.collect_photos(message, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(sent_texts(message), [start.texts.PHOTO_NO_FACE])
+        self.assertEqual(asyncio.run(state.get_data()).get("photos_count", 0), 0)
 
 
 if __name__ == "__main__":

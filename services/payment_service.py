@@ -104,8 +104,9 @@ class PaymentService:
         payment_id = f"{provider}:one_time:{user_id}:{uuid.uuid4().hex[:12]}"
         if provider == "yookassa":
             url = await self._yookassa.create_payment_link(price, "Разовый подбор подарка", user_id, payment_id)
-            return {"provider_payment_id": payment_id, "url": url}
+            return {"provider_payment_id": payment_id, "url": url, "reused": "0"}
         payload = await self._stars.create_invoice_payload(user_id, price, "Разовый подбор подарка", payment_id)
+        payload["reused"] = "0"
         return payload
 
     async def create_subscription_payment(self, user_id: int, provider: str) -> dict[str, str]:
@@ -113,8 +114,35 @@ class PaymentService:
         payment_id = f"{provider}:subscription:{user_id}:{uuid.uuid4().hex[:12]}"
         if provider == "yookassa":
             url = await self._yookassa.create_payment_link(price, "Подписка на месяц", user_id, payment_id)
-            return {"provider_payment_id": payment_id, "url": url}
+            return {"provider_payment_id": payment_id, "url": url, "reused": "0"}
         payload = await self._stars.create_invoice_payload(user_id, price, "Подписка на месяц", payment_id)
+        payload["reused"] = "0"
+        return payload
+
+    async def create_or_reuse_one_time_payment(self, user_id: int, provider: str) -> dict[str, str]:
+        user = self._repository.get_or_create_user(user_id)
+        existing = self._repository.get_open_payment(user, provider, "one_time")
+        if existing:
+            return await self._rebuild_payment_payload(user_id, provider, "one_time", existing.provider_payment_id)
+        return await self.create_one_time_payment(user_id, provider)
+
+    async def create_or_reuse_subscription_payment(self, user_id: int, provider: str) -> dict[str, str]:
+        user = self._repository.get_or_create_user(user_id)
+        existing = self._repository.get_open_payment(user, provider, "subscription")
+        if existing:
+            return await self._rebuild_payment_payload(user_id, provider, "subscription", existing.provider_payment_id)
+        return await self.create_subscription_payment(user_id, provider)
+
+    async def _rebuild_payment_payload(
+        self, user_id: int, provider: str, kind: str, payment_id: str
+    ) -> dict[str, str]:
+        purpose = "Подписка на месяц" if kind == "subscription" else "Разовый подбор подарка"
+        price = self.get_subscription_price(provider) if kind == "subscription" else self.get_one_time_price(provider)
+        if provider == "yookassa":
+            url = await self._yookassa.create_payment_link(price, purpose, user_id, payment_id)
+            return {"provider_payment_id": payment_id, "url": url, "reused": "1"}
+        payload = await self._stars.create_invoice_payload(user_id, price, purpose, payment_id)
+        payload["reused"] = "1"
         return payload
 
     def grant_one_time_request(self, user_id: int) -> None:

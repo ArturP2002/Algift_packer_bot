@@ -476,6 +476,39 @@ class ProductService:
                     return [{"keyword": query, "offers": offers}]
         return []
 
+    def catalog_hints(self, *, min_price: int, max_price: int, max_categories: int = 12, per_category: int = 3) -> str:
+        """Краткий обзор каталога в окне бюджета — чтобы модель предлагала только существующие типы товаров."""
+        price_min = max(0, int(min_price or 0))
+        price_max = max(price_min, int(max_price or 0))
+        query = AffiliateProduct.select().where(
+            AffiliateProduct.tracking_link.is_null(False),
+            AffiliateProduct.price >= price_min,
+            AffiliateProduct.price <= price_max,
+        )
+        by_category: dict[str, list[AffiliateProduct]] = {}
+        for product in query.order_by(AffiliateProduct.price.asc()).limit(2500):
+            category = (product.category or "другое").strip() or "другое"
+            bucket = by_category.setdefault(category, [])
+            if len(bucket) >= per_category:
+                continue
+            bucket.append(product)
+            if len(by_category) >= max_categories and all(len(items) >= per_category for items in by_category.values()):
+                # Уже набрали достаточно — можно остановиться раньше на следующей итерации.
+                pass
+        if not by_category:
+            return "В каталоге в этом бюджете товаров пока нет."
+        # Берём категории с наибольшим числом примеров, стабильно по имени.
+        ranked = sorted(by_category.items(), key=lambda pair: (-len(pair[1]), pair[0].lower()))[:max_categories]
+        lines = [f"Ориентиры каталога в бюджете {price_min}–{price_max} ₽ (категория → примеры):"]
+        for category, products in ranked:
+            examples = "; ".join(f"{product.title[:80]} ({int(product.price or 0)} ₽)" for product in products)
+            lines.append(f"- {category}: {examples}")
+        lines.append(
+            "Предлагай только идеи, которые можно найти среди таких категорий и брендов. "
+            "Не выдумывай бренды и типы товаров, которых здесь нет."
+        )
+        return "\n".join(lines)
+
     @staticmethod
     def _extract_tokens(keywords: list[str]) -> list[str]:
         joined = " ".join(str(item) for item in keywords if str(item).strip())

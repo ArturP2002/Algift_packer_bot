@@ -103,6 +103,9 @@ class RecommendationFailureFlowTests(unittest.TestCase):
                 get_recommendations=AsyncMock(side_effect=start.RecommendationUnavailable("401"))
             )
             bot.container.gpt_service = MagicMock()
+            bot.container.repository.get_or_create_user.return_value = SimpleNamespace(id=1, telegram_id=USER.id)
+            bot.container.repository.recent_recommendation_names.return_value = []
+            bot.container.repository.recent_downvoted_names.return_value = []
             message = SimpleNamespace(bot=bot, from_user=USER, answer=AsyncMock())
             await start._emit_recommendations(message, state)
             bot.container.payment_service.consume_request.assert_not_called()
@@ -110,6 +113,31 @@ class RecommendationFailureFlowTests(unittest.TestCase):
             self.assertEqual(last_call.args[0], start.texts.RECO_UNAVAILABLE)
             self.assertEqual(last_call.kwargs["reply_markup"].inline_keyboard[0][0].callback_data, "reco:retry")
             self.assertEqual((await state.get_data())["budget"], SURVEY["budget"])
+
+        asyncio.run(scenario())
+
+    def test_pending_start_opens_mode_picker(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.update_data(pending_start=True)
+            message = SimpleNamespace(
+                bot=make_bot(),
+                from_user=USER,
+                answer=AsyncMock(),
+                chat=SimpleNamespace(id=USER.id),
+                successful_payment=SimpleNamespace(invoice_payload="stars:one_time:42:abc"),
+            )
+            with patch.object(start, "_emit_recommendations", AsyncMock()) as emit, patch.object(
+                start, "_render_screen", AsyncMock()
+            ) as render, patch.object(start, "_send_cabinet_as_new_message", AsyncMock()) as cabinet, patch.object(
+                start.asyncio, "sleep", AsyncMock()
+            ):
+                await start.successful_payment(message, state)
+            emit.assert_not_awaited()
+            cabinet.assert_not_awaited()
+            render.assert_awaited_once()
+            self.assertEqual(render.await_args.kwargs["text"], start.texts.START_PICK_MODE)
+            self.assertFalse((await state.get_data()).get("pending_start"))
 
         asyncio.run(scenario())
 

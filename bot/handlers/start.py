@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
@@ -21,6 +21,8 @@ from aiogram.types import (
 
 from bot.keyboards.inline import (
     FEEDBACK_PREFIX,
+    access_paywall_keyboard,
+    after_results_keyboard,
     budget_keyboard,
     cabinet_keyboard,
     event_keyboard,
@@ -29,6 +31,7 @@ from bot.keyboards.inline import (
     main_menu_keyboard,
     mode_keyboard,
     payment_choice_keyboard,
+    photo_upsell_keyboard,
     product_links_keyboard,
     relation_keyboard,
     retry_recommendation_keyboard,
@@ -47,6 +50,7 @@ from services.recommendation_service import (
 router = Router()
 logger = logging.getLogger("gift_bot.start")
 PHOTO_STATE_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+RECO_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 GENDER_ALLOWED = {"мужской", "женский"}
 HOBBIES_SKIP_WORDS = {"нет", "не знаю", "пропустить", "-", "—"}
@@ -59,6 +63,39 @@ PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
 
 def _build_telegram_file_url(bot_token: str, file_path: str) -> str:
     return f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+
+def _user_has_access(payment_service, user_id: int, data: dict | None = None) -> bool:
+    access_state = payment_service.get_access_state(user_id)
+    paid_for_current_request = bool((data or {}).get("paid_for_current_request"))
+    return bool(access_state.has_subscription or paid_for_current_request or access_state.paid_requests_left > 0)
+
+
+async def _ensure_access_or_paywall(
+    *,
+    state: FSMContext,
+    source_message: Message,
+    user_id: int,
+    username: str | None,
+) -> bool:
+    """True — доступ есть. False — показан paywall, флоу нужно остановить."""
+    container = source_message.bot.container
+    payment_service = container.payment_service
+    repository = container.repository
+    data = await state.get_data()
+    if _user_has_access(payment_service, user_id, data):
+        return True
+    repository.get_or_create_user(user_id, username)
+    await state.set_state(SurveyStates.choosing_mode)
+    await state.update_data(pending_start=True, pending_reco=False, paid_for_current_request=False)
+    await _render_screen(
+        state=state,
+        source_message=source_message,
+        text=texts.PAYWALL,
+        reply_markup=access_paywall_keyboard(),
+    )
+    logger.info("Показан ранний paywall user_id=%s", user_id)
+    return False
 
 
 async def _delete_user_input(message: Message) -> None:
@@ -208,17 +245,56 @@ async def buy_subscription_from_cabinet(callback: CallbackQuery, state: FSMConte
 @router.callback_query(F.data == "menu:start")
 async def menu_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SurveyStates.choosing_mode)
+    if not await _ensure_access_or_paywall(
+        state=state,
+        source_message=callback.message,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+    ):
+        await callback.answer()
+        return
+    await state.update_data(pending_start=False)
     await _render_screen(state=state, source_message=callback.message, text=texts.START_PICK_MODE, reply_markup=mode_keyboard())
     await callback.answer()
 
 
 @router.callback_query(SurveyStates.choosing_mode, F.data.startswith("mode:"))
 async def choose_mode(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_access_or_paywall(
+        state=state,
+        source_message=callback.message,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+    ):
+        await callback.answer()
+        return
     mode = callback.data.split(":")[1]
-    await state.update_data(mode=mode)
+    await state.update_data(mode=mode, pending_start=False)
     await state.set_state(SurveyStates.age)
     hint = texts.QUICK_MODE_HINT if mode == "quick" else texts.SMART_MODE_HINT
     await _render_screen(state=state, source_message=callback.message, text=f"{hint}\n\n{texts.ASK_AGE}")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "upsell:photo")
+async def start_extended_from_upsell(callback: CallbackQuery, state: FSMContext) -> None:
+    """Кнопка «Подбор с фото» после быстрого подбора."""
+    if not await _ensure_access_or_paywall(
+        state=state,
+        source_message=callback.message,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+    ):
+        await callback.answer()
+        return
+    await state.clear()
+    await state.set_state(SurveyStates.age)
+    await state.update_data(mode="extended", screen_message_id=None)
+    await _render_screen(
+        state=state,
+        source_message=callback.message,
+        text=f"{texts.SMART_MODE_HINT}\n\n{texts.ASK_AGE}",
+    )
     await callback.answer()
 
 
@@ -343,16 +419,29 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
             if photos_count >= 6:
                 await _replace_photo_status(message, state, texts.PHOTO_LIMIT)
                 return
-            photos_count += 1
             try:
                 best_photo = message.photo[-1]
                 tg_file = await message.bot.get_file(best_photo.file_id)
-                if tg_file.file_path:
-                    photo_url = _build_telegram_file_url(message.bot.token, tg_file.file_path)
-                    if photo_url not in photo_urls and len(photo_urls) < 6:
-                        photo_urls.append(photo_url)
+                if not tg_file.file_path:
+                    await _replace_photo_status(message, state, texts.PHOTO_ERROR)
+                    return
+                photo_url = _build_telegram_file_url(message.bot.token, tg_file.file_path)
+                gpt_service = message.bot.container.gpt_service
+                try:
+                    has_face = await gpt_service.photo_has_face(photo_url)
+                except Exception as exc:
+                    logger.warning("Проверка лица не удалась user_id=%s err=%s", message.from_user.id, exc)
+                    has_face = True
+                if not has_face:
+                    await _replace_photo_status(message, state, texts.PHOTO_NO_FACE)
+                    return
+                if photo_url not in photo_urls and len(photo_urls) < 6:
+                    photo_urls.append(photo_url)
+                photos_count = len(photo_urls)
             except Exception as exc:
                 logger.warning("Не удалось получить путь к фото user_id=%s err=%s", message.from_user.id, exc)
+                await _replace_photo_status(message, state, texts.PHOTO_ERROR)
+                return
             await state.update_data(photos_count=photos_count, photo_urls=photo_urls)
             await _replace_photo_status(message, state, texts.PHOTO_ADDED.format(count=photos_count))
             return
@@ -367,6 +456,12 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
             await message.answer(texts.PHOTO_SKIPPED)
         await state.set_state(SurveyStates.hobbies)
         await message.answer(texts.ASK_HOBBIES, reply_markup=ReplyKeyboardRemove())
+
+
+@router.message(F.photo, ~StateFilter(SurveyStates.photos))
+async def stray_photo_hint(message: Message, state: FSMContext) -> None:
+    """Фото вне шага загрузки — подсказка с кнопкой умного подбора."""
+    await message.answer(texts.PHOTO_OUTSIDE_FLOW, reply_markup=photo_upsell_keyboard())
 
 
 @router.message(SurveyStates.hobbies)
@@ -408,6 +503,11 @@ async def drop_text_during_inline_steps(message: Message, state: FSMContext) -> 
 async def _emit_recommendations(message: Message, state: FSMContext, user: User | None = None) -> None:
     # После нажатия inline-кнопки message — сообщение бота, его from_user — сам бот.
     user = user or message.from_user
+    async with RECO_LOCKS[user.id]:
+        await _emit_recommendations_locked(message, state, user)
+
+
+async def _emit_recommendations_locked(message: Message, state: FSMContext, user: User) -> None:
     data = await state.get_data()
     container = message.bot.container
     payment_service = container.payment_service
@@ -425,15 +525,10 @@ async def _emit_recommendations(message: Message, state: FSMContext, user: User 
             reply_markup=cabinet_keyboard(),
         )
         return
-    access_state = payment_service.get_access_state(user_id)
-    paid_for_current_request = bool(data.get("paid_for_current_request"))
-    has_stored_one_time = access_state.paid_requests_left > 0
-    # Доступ открывается, если активна подписка, есть оплаченный текущий платеж
-    # или в БД уже есть неиспользованный разовый запрос.
-    if not access_state.has_subscription and not paid_for_current_request and not has_stored_one_time:
+    if not _user_has_access(payment_service, user_id, data):
         await state.set_state(SurveyStates.hobbies)
-        await message.answer(texts.PAYWALL, reply_markup=payment_choice_keyboard("one_time"))
-        await state.update_data(pending_reco=True, paid_for_current_request=False)
+        await message.answer(texts.PAYWALL, reply_markup=access_paywall_keyboard())
+        await state.update_data(pending_reco=True, pending_start=False, paid_for_current_request=False)
         repository.get_or_create_user(user_id, user.username)
         logger.info("Показан paywall user_id=%s", user_id)
         return
@@ -454,6 +549,8 @@ async def _emit_recommendations(message: Message, state: FSMContext, user: User 
             logger.info("Готов анализ фото user_id=%s len=%s", user_id, len(photo_insights))
         except Exception as exc:
             logger.warning("Анализ фото не удался user_id=%s err=%s", user_id, exc)
+    db_user = repository.get_or_create_user(user_id, user.username)
+    exclude_names = repository.recent_recommendation_names(db_user) + repository.recent_downvoted_names(db_user)
     context = RecommendationContext(
         mode=data.get("mode", "extended"),
         age=int(data["age"]),
@@ -465,6 +562,7 @@ async def _emit_recommendations(message: Message, state: FSMContext, user: User 
         hobbies=data.get("hobbies", ""),
         photos_count=int(data.get("photos_count", 0)),
         photo_insights=photo_insights,
+        exclude_names=exclude_names,
     )
     await message.answer(texts.GENERATING)
     try:
@@ -481,7 +579,7 @@ async def _emit_recommendations(message: Message, state: FSMContext, user: User 
     item_ids = _save_recommendations(repository, user, context, items)
     if len(items) < 6:
         await message.answer(
-            "Нашел меньше вариантов, чем обычно: показываю только идеи, которые попали в ваш бюджет."
+            "Нашел меньше вариантов, чем обычно: показываю только идеи, которые есть в каталоге и попали в ваш бюджет."
         )
     await message.answer("🎯 Основная идея подарка:")
     await _send_item(message, items[0], item_ids[0])
@@ -491,8 +589,8 @@ async def _emit_recommendations(message: Message, state: FSMContext, user: User 
     for item, item_id in list(zip(items, item_ids))[1:6]:
         await _send_item(message, item, item_id)
     if data.get("mode") == "quick":
-        await message.answer(texts.UPSELL_QUICK)
-    await message.answer(texts.RESULT_TRIGGER)
+        await message.answer(texts.UPSELL_QUICK, reply_markup=photo_upsell_keyboard())
+    await message.answer(texts.RESULT_TRIGGER, reply_markup=after_results_keyboard())
     payment_service.consume_request(user_id)
     logger.info("Подбор завершен user_id=%s items=%s", user_id, len(items))
     await state.clear()
@@ -528,7 +626,8 @@ async def _send_item(message: Message, item: dict, item_id: int | None = None) -
         name=item.get("name", "Подарок"),
         reason=item.get("reason", "Подходит по вашему запросу."),
     )
-    text += texts.ITEM_LINKS_HINT if links and markup else texts.ITEM_NO_LINKS_HINT
+    if links and markup:
+        text += texts.ITEM_LINKS_HINT
     await message.answer(text, reply_markup=markup)
 
 
@@ -572,9 +671,9 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
     kind = callback.data.split(":")[2]
     logger.info("Создание инвойса Stars user_id=%s", callback.from_user.id)
     if kind == "subscription":
-        invoice = await payment_service.create_subscription_payment(callback.from_user.id, "stars")
+        invoice = await payment_service.create_or_reuse_subscription_payment(callback.from_user.id, "stars")
     else:
-        invoice = await payment_service.create_one_time_payment(callback.from_user.id, "stars")
+        invoice = await payment_service.create_or_reuse_one_time_payment(callback.from_user.id, "stars")
     repository.create_or_get_payment(
         user=user,
         provider="stars",
@@ -583,6 +682,8 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
         provider_payment_id=invoice["payload"],
         idempotency_key=invoice["payload"],
     )
+    if invoice.get("reused") == "1":
+        await callback.message.answer(texts.PAYMENT_ALREADY_OPEN)
     await _render_screen(state=state, source_message=callback.message, text="Открываю оплату через Telegram Stars...")
     await callback.message.answer_invoice(
         title=invoice["title"],
@@ -622,12 +723,24 @@ async def successful_payment(message: Message, state: FSMContext) -> None:
 
 
 async def _resume_after_payment(message: Message, state: FSMContext, user: User) -> None:
-    """Если оплату показали посреди подбора — продолжаем его с уже заполненной анкетой."""
+    """После оплаты: продолжить подбор, открыть выбор режима или кабинет."""
     data = await state.get_data()
-    await state.update_data(pending_reco=False)
-    if data.get("pending_reco") and _has_survey_payload(data):
+    pending_reco = bool(data.get("pending_reco"))
+    pending_start = bool(data.get("pending_start"))
+    await state.update_data(pending_reco=False, pending_start=False)
+    if pending_reco and _has_survey_payload(data):
         logger.info("Продолжаю подбор после оплаты user_id=%s", user.id)
         await _emit_recommendations(message, state, user)
+        return
+    if pending_start:
+        logger.info("Открываю выбор режима после оплаты user_id=%s", user.id)
+        await state.set_state(SurveyStates.choosing_mode)
+        await _render_screen(
+            state=state,
+            source_message=message,
+            text=texts.START_PICK_MODE,
+            reply_markup=mode_keyboard(),
+        )
         return
     await state.set_state(SurveyStates.choosing_mode)
     await _send_cabinet_as_new_message(message, state, user.id, user.username)
@@ -644,9 +757,9 @@ async def pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
     kind = callback.data.split(":")[2]
     logger.info("Создание оплаты YooKassa user_id=%s", callback.from_user.id)
     if kind == "subscription":
-        payment = await payment_service.create_subscription_payment(callback.from_user.id, "yookassa")
+        payment = await payment_service.create_or_reuse_subscription_payment(callback.from_user.id, "yookassa")
     else:
-        payment = await payment_service.create_one_time_payment(callback.from_user.id, "yookassa")
+        payment = await payment_service.create_or_reuse_one_time_payment(callback.from_user.id, "yookassa")
     payment_id = payment["provider_payment_id"]
     repository.create_or_get_payment(
         user=user,
@@ -656,8 +769,9 @@ async def pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
         provider_payment_id=payment_id,
         idempotency_key=payment_id,
     )
+    text = texts.PAYMENT_ALREADY_OPEN if payment.get("reused") == "1" else texts.YOOKASSA_READY
     await callback.message.answer(
-        texts.YOOKASSA_READY,
+        text,
         reply_markup=yookassa_check_keyboard(payment_id, payment["url"]),
     )
     await callback.answer()

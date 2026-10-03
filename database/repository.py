@@ -193,6 +193,59 @@ class Repository:
     def count_paid_payments(self, user: User) -> int:
         return Payment.select().where((Payment.user == user) & (Payment.status == "paid")).count()
 
+    def get_open_payment(self, user: User, provider: str, kind: str) -> Payment | None:
+        """Незавершённый платёж того же провайдера и типа — чтобы не плодить ссылки."""
+        return (
+            Payment.select()
+            .where(
+                (Payment.user == user)
+                & (Payment.provider == provider)
+                & (Payment.kind == kind)
+                & (Payment.status == "created")
+            )
+            .order_by(Payment.created_at.desc())
+            .first()
+        )
+
+    def recent_recommendation_names(self, user: User, *, limit: int = 24) -> list[str]:
+        rows = (
+            RecommendationItem.select(RecommendationItem.name)
+            .join(RecommendationRequest)
+            .where(RecommendationRequest.user == user)
+            .order_by(RecommendationItem.created_at.desc())
+            .limit(limit)
+        )
+        names: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            name = (row.name or "").strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        return names
+
+    def recent_downvoted_names(self, user: User, *, limit: int = 12) -> list[str]:
+        rows = (
+            ItemFeedback.select(ItemFeedback, RecommendationItem)
+            .join(RecommendationItem)
+            .join(RecommendationRequest)
+            .where((ItemFeedback.telegram_id == user.telegram_id) & (ItemFeedback.vote < 0))
+            .order_by(ItemFeedback.created_at.desc())
+            .limit(limit)
+        )
+        names: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            name = (row.item.name or "").strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        return names
+
     def is_intro_seen(self, user: User) -> bool:
         return bool(user.intro_seen)
 

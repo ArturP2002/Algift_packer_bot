@@ -69,3 +69,40 @@ class GPTService:
             max_output_tokens=500,
         )
         return response.output_text.strip()
+
+    async def photo_has_face(self, photo_url: str) -> bool:
+        """True, если на фото есть различимое лицо человека."""
+        if not str(photo_url or "").strip():
+            return False
+        schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["has_face"],
+            "properties": {"has_face": {"type": "boolean"}},
+        }
+        prompt = (
+            "Определи, видно ли на фото лицо человека (хотя бы частично, достаточно для портрета). "
+            "Ноги, обувь, предметы без лица — has_face=false. "
+            "Верни только JSON по схеме."
+        )
+        content: list[dict[str, Any]] = [
+            {"type": "input_text", "text": prompt},
+            {"type": "input_image", "image_url": photo_url},
+        ]
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                response = await self._client.responses.create(
+                    model=self._model,
+                    input=[{"role": "user", "content": content}],
+                    temperature=0,
+                    max_output_tokens=50,
+                    text={"format": {"type": "json_schema", "name": "face_check", "schema": schema, "strict": True}},
+                )
+                data = json.loads(response.output_text)
+                return bool(data.get("has_face"))
+            except self._fatal_errors:
+                raise
+            except Exception as exc:  # pragma: no cover - network/runtime guard
+                last_error = exc
+        raise RuntimeError(f"Failed to check face on photo: {last_error}")

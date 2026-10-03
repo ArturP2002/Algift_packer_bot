@@ -118,6 +118,27 @@ def retry_recommendation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def after_results_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🎯 Новый подбор", callback_data="menu:start")]]
+    )
+
+
+def photo_upsell_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔍 Подбор с фото", callback_data="upsell:photo")]]
+    )
+
+
+def access_paywall_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Разовый подбор", callback_data="buy:one_time")],
+            [InlineKeyboardButton(text="💎 Подписка на месяц", callback_data="buy:subscription")],
+        ]
+    )
+
+
 def payment_choice_keyboard(kind: str = "one_time") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

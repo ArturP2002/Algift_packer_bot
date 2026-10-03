@@ -120,7 +120,7 @@ class SelectionTests(CatalogTestCase):
         self.assertEqual(len(items[0]["links"][0]["offers"]), 3)
         self.assertTrue(items[0]["reason"].startswith("Он любит музыку в походах."))
 
-    def test_empty_choice_keeps_idea_only_if_estimate_fits(self) -> None:
+    def test_empty_choice_falls_back_to_catalog_offers(self) -> None:
         gpt = FakeGPTService(
             [
                 idea("Колонка JBL", ["колонка jbl"], 3000, 4000, category="аудио"),
@@ -129,10 +129,10 @@ class SelectionTests(CatalogTestCase):
             [choice(0, []), choice(1, [])],
         )
         items = self.run_service(gpt)
-        # Колонку модель отвергла, а ее оценка вне бюджета; мышь осталась без кнопок с примерной ценой.
-        self.assertEqual([item["name"] for item in items], ["Игровая мышь Razer"])
-        self.assertEqual(items[0]["links"], [])
-        self.assertIn("Примерная цена: 7 000–9 000 ₽", items[0]["reason"])
+        # Пустой offer_ids больше не оставляет идею без ссылок — берём топ из каталога.
+        self.assertEqual([item["name"] for item in items], ["Колонка JBL", "Игровая мышь Razer"])
+        self.assertTrue(all(item["links"] for item in items))
+        self.assertIn("Цена в каталоге", items[0]["reason"])
 
     def test_catalog_price_beats_model_estimate(self) -> None:
         gpt = FakeGPTService(
@@ -144,11 +144,26 @@ class SelectionTests(CatalogTestCase):
             selection=None,
         )
         items = self.run_service(gpt)
-        self.assertEqual([item["name"] for item in items], ["Игровая мышь Razer", "Настольная игра"])
+        # Идеи без матча в каталоге не показываем; остаётся только мышь со ссылкой.
+        self.assertEqual([item["name"] for item in items], ["Игровая мышь Razer"])
         self.assertEqual([o["url"] for o in items[0]["links"][0]["offers"]], ["https://example.com/mouse"])
         self.assertIn("Цена в каталоге: 9 999 ₽", items[0]["reason"])
-        # На «настольную игру» не подставляем настольный блендер.
-        self.assertEqual(items[1]["links"], [])
+
+    def test_missing_catalog_idea_is_dropped(self) -> None:
+        gpt = FakeGPTService(
+            [idea("Штатив Manfrotto", ["штатив manfrotto", "штатив"], 5000, 7000, category="фото")],
+            selection=None,
+        )
+        items = self.run_service(gpt)
+        self.assertEqual(items, [])
+
+    def test_exclude_names_skip_recent_gift(self) -> None:
+        gpt = FakeGPTService(
+            [idea("Колонка JBL Flip", ["колонка jbl", "портативная колонка"], 8000, 11000, category="аудио")],
+            selection=None,
+        )
+        items = self.run_service(gpt, make_context(exclude_names=["Колонка JBL Flip"]))
+        self.assertEqual(items, [])
 
     def test_category_limit(self) -> None:
         gpt = FakeGPTService(
@@ -169,14 +184,17 @@ class SelectionTests(CatalogTestCase):
 
 
 class PromptTests(CatalogTestCase):
+    products = (("book", "Книга про танцы", 6500),)
+
     def test_prompt_uses_human_labels(self) -> None:
-        gpt = FakeGPTService([idea("Книга", ["книга"], 6000, 7000)], selection=[choice(0, [])])
+        gpt = FakeGPTService([idea("Книга", ["книга"], 6000, 7000)], selection=[choice(0, ["i0o0"])])
         context = make_context(gender="женский", relation="daughter", age=23, hobbies="танцы")
         self.run_service(gpt, context)
         prompts = " ".join(call["prompt"] for call in gpt.calls)
         self.assertIn("Получатель: дочь, 23 года, женщина.", prompts)
         self.assertIn("Повод: день рождения.", prompts)
         self.assertIn("Бюджет: 5 000–10 000 ₽ (допустимо до 11 000 ₽).", prompts)
+        self.assertIn("Ориентиры каталога", prompts)
         self.assertNotIn("birthday", prompts)
         self.assertNotIn("daughter", prompts)
 
