@@ -117,6 +117,63 @@ class SurveyFlowTests(unittest.TestCase):
         self.assertEqual(sent_texts(message), [start.texts.PHOTO_NO_FACE])
         self.assertEqual(asyncio.run(state.get_data()).get("photos_count", 0), 0)
 
+    def test_new_pick_asks_reuse_when_last_survey_exists(self) -> None:
+        async def scenario():
+            state = make_state()
+            last_survey = {
+                "mode": "quick",
+                "age": 30,
+                "gender": "женский",
+                "event": "birthday",
+                "relation": "girlfriend",
+                "budget": 10000,
+                "budget_min": 5000,
+                "hobbies": "йога",
+            }
+            await state.update_data(last_survey=last_survey)
+            message = make_message()
+            callback = SimpleNamespace(data="pick:again", message=message, from_user=USER, answer=AsyncMock())
+            await start.pick_again(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(asyncio.run(state.get_state()), SurveyStates.choosing_reuse.state)
+        text = sent_texts(message)[0]
+        self.assertIn("Как продолжим новый подбор?", text)
+        self.assertIn("йога", text)
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertEqual(callbacks, ["pick:reuse", "pick:fresh"])
+
+    def test_pick_fresh_opens_mode_choice(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.choosing_reuse)
+            await state.update_data(
+                last_survey={
+                    "mode": "quick",
+                    "age": 30,
+                    "gender": "женский",
+                    "event": "birthday",
+                    "relation": "girlfriend",
+                    "budget": 10000,
+                }
+            )
+            message = make_message()
+            message.bot.container = SimpleNamespace(
+                payment_service=SimpleNamespace(
+                    get_access_state=lambda _uid: SimpleNamespace(has_subscription=True, paid_requests_left=0)
+                ),
+                repository=SimpleNamespace(get_or_create_user=lambda *a, **k: None),
+            )
+            callback = SimpleNamespace(data="pick:fresh", message=message, from_user=USER, answer=AsyncMock())
+            await start.pick_fresh(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(asyncio.run(state.get_state()), SurveyStates.choosing_mode.state)
+        self.assertEqual(sent_texts(message)[0], start.texts.START_PICK_MODE)
+
 
 if __name__ == "__main__":
     unittest.main()

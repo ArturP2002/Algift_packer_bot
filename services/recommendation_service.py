@@ -12,12 +12,34 @@ from services.product_service import ProductService, market_label
 # Берем идей с запасом: часть отсеется по цене или фото, показываем до 6.
 _IDEAS_REQUESTED = 8
 _IDEAS_SHOWN = 6
-_MAX_PER_CATEGORY = 2
+_MAX_PER_CATEGORY = 1
 _CANDIDATES_PER_IDEA = 8
 _MAX_CHOSEN_OFFERS = 3
 _CATALOG_RETRY_ROUNDS = 3
 # Лимит сообщения Telegram 4096 символов; запас — на название идеи и подсказку под текстом.
 _REASON_LIMIT = 3700
+
+# Варианты одной линейки: Slim и Pro — разные товары, нельзя подменять.
+_VARIANT_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"slim", "pro", "digital", "disc", "disk", "standard", "fat"}),
+    frozenset({"plus", "max", "mini", "ultra", "air", "se", "lite", "neo"}),
+    frozenset({"flip", "charge", "clip", "go", "pulse", "boombox"}),
+)
+
+# Один тип товара под разными category у модели («кофемашина» / «кухня» / «бытовая техника»).
+_PRODUCT_TYPE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("кофе", ("кофемаш", "кофевар", "кофемолн", "кофе")),
+    ("колонка", ("колонк", "акустик", "саундбар", "speaker")),
+    ("наушники", ("наушн", "гарнитур", "earbuds", "airpods", "buds")),
+    ("консоль", ("playstation", "xbox", "nintendo", "приставк", "консол", "ps5", "ps4")),
+    ("пылесос", ("пылесос", "робот-пылесос")),
+    ("блендер", ("блендер", "миксер", "комбайн")),
+    ("часы", ("часов", "watch", "smartwatch")),
+    ("планшет", ("планшет", "ipad", "tablet")),
+    ("ноутбук", ("ноутбук", "laptop", "macbook")),
+    ("книга", ("книг", "роман", "детектив")),
+    ("парфюм", ("парфюм", "духи", "туалетн", "одеколон")),
+)
 
 _EVENT_LABELS = {
     "birthday": "день рождения",
@@ -103,8 +125,8 @@ _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультан
   · 5–10 тыс. ₽ — заметные гаджеты и наборы;
   · 10–20+ тыс. ₽ — премиальные или крупные вещи.
   Не предлагай «ту же колонку / те же наушники другого поколения» только из‑за другого бюджета.
-- Состав подборки: 2-3 идеи по увлечениям получателя, 1 практичная вещь на каждый день, 1 «вау»-подарок (запоминающийся, немного неожиданный), 1 уютная или эмоциональная вещь. Не больше {_MAX_PER_CATEGORY} идей одной категории.
-- category — одно-два слова: «аудио», «настольные игры», «уход за собой».
+- Состав подборки: 2-3 идеи по увлечениям получателя, 1 практичная вещь на каждый день, 1 «вау»-подарок (запоминающийся, немного неожиданный), 1 уютная или эмоциональная вещь. Все идеи — разных категорий и типов товаров: не больше {_MAX_PER_CATEGORY} идеи одной категории. Три кофемашины или две колонки в одной выдаче — недопустимо.
+- category — одно-два слова: «аудио», «настольные игры», «уход за собой». Для похожих товаров используй одну и ту же category.
 - name — конкретный товар, как в каталоге магазина: тип + бренд или модель, если уместно («Портативная колонка JBL Flip 6»), а не абстракция («Что-то для музыки»).
 - keywords — 2 запроса для поиска по каталогу магазина, по 2-4 слова: тип товара + бренд/модель, без прилагательных-пояснений, назначения и получателя. Первый — точный, второй — общий («колонка jbl flip 6», затем «портативная колонка»).
 - pitch — 1-2 предложения: чем идея цепляет именно этого человека, со ссылкой на его увлечения, возраст или повод.
@@ -116,8 +138,8 @@ _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультан
 _SELECTION_INSTRUCTIONS = f"""Ты — эксперт по подаркам. Тебе дан профиль получателя и идеи подарков с товарами из каталога магазинов.
 
 Для каждой идеи верни один объект с ее idea_index:
-- offer_ids — до {_MAX_CHOSEN_OFFERS} товаров, которые действительно соответствуют идее и подходят получателю, от лучшего к худшему. Если ни один не подходит (другой тип товара, аксессуар вместо самого товара, детский вместо взрослого) — пустой список. Используй только id из списка товаров этой идеи.
-- why_for_person — 2-3 предложения: почему это подойдет именно этому человеку, со ссылкой на его увлечения, возраст, стиль. Если товар выбран — пиши про конкретную модель и ее известные особенности; не выдумывай характеристики, в которых не уверен.
+- offer_ids — до {_MAX_CHOSEN_OFFERS} товаров, которые действительно соответствуют идее и подходят получателю, от лучшего к худшему. Товар обязан совпадать с конкретной моделью/вариантом из названия идеи (например Slim ≠ Pro, Flip ≠ Charge). Если ни один не подходит (другая модель, другой тип, аксессуар вместо товара, детский вместо взрослого) — пустой список. Используй только id из списка товаров этой идеи.
+- why_for_person — 2-3 предложения: почему это подойдет именно этому человеку, со ссылкой на его увлечения, возраст, стиль. Пиши про ту модель, которую выбрал в offer_ids; не выдумывай характеристики, в которых не уверен.
 - occasion_fit — 1 предложение: почему подарок уместен к поводу и отношениям с получателем.
 - practical_value — 1 предложение: как человек будет этим пользоваться.
 - presentation_tip — 1 короткое предложение: как вручить или чем дополнить подарок.
@@ -253,7 +275,7 @@ class RecommendationService:
             self._logger.info("Раунд %s: модель вернула %s сырых идей", round_index + 1, len(raw_ideas))
             ideas = self._normalize_items(raw_ideas, context)
             ideas = self._post_filter(ideas, context.photo_insights, exclude_names=seen_names | {n.lower() for n in rejected_names})
-            ideas = self._limit_categories(ideas, already=linked)
+            ideas = self._limit_diversity(ideas, already=linked)
 
             for item in ideas:
                 name_key = item["name"].lower()
@@ -263,6 +285,7 @@ class RecommendationService:
                     item["keywords"], min_price=low, max_price=high, max_offers=_CANDIDATES_PER_IDEA
                 )
                 offers = (links[0].get("offers") if links else None) or []
+                offers = self._filter_offers_for_idea(item["name"], offers)
                 if not offers:
                     self._logger.info("Отсеиваю вариант '%s': нет товара в каталоге", item["name"])
                     rejected_names.append(item["name"])
@@ -285,6 +308,7 @@ class RecommendationService:
             choice = selection.get(index) if selection is not None else None
             item_candidates = item.pop("candidates")
             search_query = item.pop("search_query")
+            idea_name = item["name"]
             if choice is None:
                 offers = item_candidates[:_MAX_CHOSEN_OFFERS]
             else:
@@ -293,9 +317,13 @@ class RecommendationService:
                 # Пустой выбор модели при наличии кандидатов — берём топ из каталога, идею без ссылок не показываем.
                 if not offers:
                     offers = item_candidates[:_MAX_CHOSEN_OFFERS]
+            offers = self._filter_offers_for_idea(idea_name, offers, limit=_MAX_CHOSEN_OFFERS)
             if not offers:
-                self._logger.info("Отсеиваю вариант '%s': нет офферов после выбора", item.get("name", "gift"))
+                self._logger.info("Отсеиваю вариант '%s': нет офферов после выбора", idea_name)
                 continue
+            primary = offers[0]
+            # Название и текст должны совпадать с реальной ссылкой (Slim ≠ Pro).
+            item["name"] = self._display_name_from_offer(primary, fallback=idea_name)
             priced = [int(offer.get("price") or 0) for offer in offers if int(offer.get("price") or 0) > 0]
             item["price_estimate"] = min(priced, key=lambda value: abs(value - context.budget)) if priced else int(item["price_estimate"])
             price_note = self._price_note(item["price_estimate"], context.budget, live=True)
@@ -313,10 +341,13 @@ class RecommendationService:
         lines = [
             f"Нужно ещё {needed} идей, которых ещё нет в принятом списке.",
             "Предлагай только товары, которые находятся в каталоге (см. ориентиры).",
+            "Категории и типы товаров должны отличаться от уже принятых.",
         ]
         if accepted:
-            lines.append("Уже приняты (не повторяй и не предлагай близкие аналоги той же линейки):")
-            lines.extend(f"- {item['name']}" for item in accepted)
+            lines.append("Уже приняты (не повторяй близкие аналоги и тот же тип товара):")
+            for item in accepted:
+                category = item.get("category") or "—"
+                lines.append(f"- {item['name']} (category: {category})")
         if rejected:
             lines.append("Эти идеи не нашлись в каталоге — предложи другие:")
             lines.extend(f"- {name}" for name in rejected[-20:])
@@ -448,23 +479,114 @@ class RecommendationService:
             )
         return normalized
 
-    def _limit_categories(
+    def _limit_diversity(
         self, items: list[dict[str, Any]], *, already: list[dict[str, Any]] | None = None
     ) -> list[dict[str, Any]]:
-        counts: dict[str, int] = {}
+        """Не больше одной идеи на category и на семейство типов товара (кофемашины и т.п.)."""
+        category_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
         for item in already or []:
             category = item.get("category") or ""
             if category:
-                counts[category] = counts.get(category, 0) + 1
+                category_counts[category] = category_counts.get(category, 0) + 1
+            product_type = self._product_type_family(item)
+            if product_type:
+                type_counts[product_type] = type_counts.get(product_type, 0) + 1
         kept: list[dict[str, Any]] = []
         for item in items:
             category = item.get("category") or ""
-            if category and counts.get(category, 0) >= _MAX_PER_CATEGORY:
-                self._logger.info("Отсеиваю вариант '%s': уже %s идеи категории «%s»", item["name"], _MAX_PER_CATEGORY, category)
+            if category and category_counts.get(category, 0) >= _MAX_PER_CATEGORY:
+                self._logger.info(
+                    "Отсеиваю вариант '%s': уже %s идеи категории «%s»",
+                    item["name"],
+                    _MAX_PER_CATEGORY,
+                    category,
+                )
                 continue
-            counts[category] = counts.get(category, 0) + 1
+            product_type = self._product_type_family(item)
+            if product_type and type_counts.get(product_type, 0) >= _MAX_PER_CATEGORY:
+                self._logger.info(
+                    "Отсеиваю вариант '%s': уже есть идея типа «%s»",
+                    item["name"],
+                    product_type,
+                )
+                continue
+            if category:
+                category_counts[category] = category_counts.get(category, 0) + 1
+            if product_type:
+                type_counts[product_type] = type_counts.get(product_type, 0) + 1
             kept.append(item)
         return kept
+
+    @classmethod
+    def _product_type_family(cls, item: dict[str, Any]) -> str:
+        haystack_parts = [str(item.get("name", "")), str(item.get("category", ""))]
+        keywords = item.get("keywords", [])
+        if isinstance(keywords, list):
+            haystack_parts.extend(str(k) for k in keywords)
+        haystack = " ".join(haystack_parts).lower()
+        for family, markers in _PRODUCT_TYPE_FAMILIES:
+            if any(marker in haystack for marker in markers):
+                return family
+        return ""
+
+    @classmethod
+    def _filter_offers_for_idea(
+        cls, idea_name: str, offers: list[dict[str, Any]], *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Убираем офферы другой модификации (Slim vs Pro) и поднимаем точные совпадения."""
+        if not offers:
+            return []
+        idea_variants = cls._variant_tokens(idea_name)
+        if idea_variants:
+            matched: list[dict[str, Any]] = []
+            for offer in offers:
+                title = str(offer.get("title") or "")
+                offer_variants = cls._variant_tokens(title)
+                if offer_variants and cls._variants_conflict(idea_variants, offer_variants):
+                    continue
+                # Если у идеи есть вариант (slim), предпочитаем офферы с тем же маркером.
+                if offer_variants and not (idea_variants & offer_variants):
+                    continue
+                matched.append(offer)
+            if not matched:
+                return []
+            pool = matched
+        else:
+            pool = list(offers)
+        idea_tokens = set(re.findall(r"[a-zа-яё0-9]{3,}", idea_name.lower()))
+        pool.sort(
+            key=lambda offer: -sum(
+                1 for token in idea_tokens if token in str(offer.get("title") or "").lower()
+            )
+        )
+        if limit is not None:
+            return pool[:limit]
+        return pool
+
+    @classmethod
+    def _variant_tokens(cls, text: str) -> set[str]:
+        tokens = set(re.findall(r"[a-zа-яё0-9]+", (text or "").lower()))
+        known = {token for group in _VARIANT_GROUPS for token in group}
+        return tokens & known
+
+    @classmethod
+    def _variants_conflict(cls, left: set[str], right: set[str]) -> bool:
+        for group in _VARIANT_GROUPS:
+            left_hit = left & group
+            right_hit = right & group
+            if left_hit and right_hit and left_hit != right_hit:
+                return True
+        return False
+
+    @staticmethod
+    def _display_name_from_offer(offer: dict[str, Any], *, fallback: str) -> str:
+        title = str(offer.get("title") or "").strip()
+        if not title:
+            return fallback
+        # Убираем хвост бандла после «+», чтобы в заголовке не было «+ Hogwarts Legacy».
+        primary = re.split(r"\s+\+\s+", title, maxsplit=1)[0].strip()
+        return primary[:120] or fallback
 
     def _post_filter(
         self,

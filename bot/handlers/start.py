@@ -35,6 +35,7 @@ from bot.keyboards.inline import (
     product_links_keyboard,
     relation_keyboard,
     retry_recommendation_keyboard,
+    reuse_survey_keyboard,
     yookassa_check_keyboard,
 )
 from bot.states.survey import SurveyStates
@@ -54,6 +55,16 @@ RECO_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 GENDER_ALLOWED = {"мужской", "женский"}
 HOBBIES_SKIP_WORDS = {"нет", "не знаю", "пропустить", "-", "—"}
+SURVEY_SNAPSHOT_FIELDS = (
+    "mode",
+    "age",
+    "gender",
+    "event",
+    "relation",
+    "budget",
+    "budget_min",
+    "hobbies",
+)
 PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Готово")]],
     resize_keyboard=True,
@@ -63,6 +74,55 @@ PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
 
 def _build_telegram_file_url(bot_token: str, file_path: str) -> str:
     return f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+
+def _snapshot_survey(data: dict) -> dict:
+    snapshot = {key: data[key] for key in SURVEY_SNAPSHOT_FIELDS if key in data}
+    return snapshot if _has_survey_payload(snapshot) else {}
+
+
+def _format_survey_summary(survey: dict) -> str:
+    if not survey:
+        return texts.REUSE_SUMMARY_EMPTY
+    mode = "быстрый" if survey.get("mode") == "quick" else "умный (с фото)"
+    hobbies = (survey.get("hobbies") or "").strip() or "не указаны"
+    budget = int(survey.get("budget") or 0)
+    budget_min = int(survey.get("budget_min") or 0)
+    if budget_min and budget_min < budget:
+        budget_line = f"{budget_min:,}–{budget:,} ₽".replace(",", " ")
+    else:
+        budget_line = f"до {budget:,} ₽".replace(",", " ")
+    return (
+        f"Прошлая анкета:\n"
+        f"· режим: {mode}\n"
+        f"· {relation_label(str(survey.get('relation', '')))}, "
+        f"{survey.get('age')} лет, {survey.get('gender')}\n"
+        f"· повод: {event_label(str(survey.get('event', '')))}\n"
+        f"· бюджет: {budget_line}\n"
+        f"· интересы: {hobbies}"
+    )
+
+
+async def _start_fresh_pick(*, state: FSMContext, source_message: Message, user_id: int, username: str | None) -> None:
+    data = await state.get_data()
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
+    await state.set_state(SurveyStates.choosing_mode)
+    if not await _ensure_access_or_paywall(
+        state=state,
+        source_message=source_message,
+        user_id=user_id,
+        username=username,
+    ):
+        if last_survey:
+            await state.update_data(last_survey=last_survey)
+        return
+    await state.update_data(pending_start=False, last_survey=last_survey or None)
+    await _render_screen(
+        state=state,
+        source_message=source_message,
+        text=texts.START_PICK_MODE,
+        reply_markup=mode_keyboard(),
+    )
 
 
 def _user_has_access(payment_service, user_id: int, data: dict | None = None) -> bool:
@@ -85,9 +145,15 @@ async def _ensure_access_or_paywall(
     data = await state.get_data()
     if _user_has_access(payment_service, user_id, data):
         return True
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else None
     repository.get_or_create_user(user_id, username)
     await state.set_state(SurveyStates.choosing_mode)
-    await state.update_data(pending_start=True, pending_reco=False, paid_for_current_request=False)
+    await state.update_data(
+        pending_start=True,
+        pending_reco=False,
+        paid_for_current_request=False,
+        last_survey=last_survey,
+    )
     await _render_screen(
         state=state,
         source_message=source_message,
@@ -244,18 +310,88 @@ async def buy_subscription_from_cabinet(callback: CallbackQuery, state: FSMConte
 
 @router.callback_query(F.data == "menu:start")
 async def menu_start(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(SurveyStates.choosing_mode)
+    await _start_fresh_pick(
+        state=state,
+        source_message=callback.message,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "pick:again")
+async def pick_again(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
+    if not _has_survey_payload(last_survey):
+        await _start_fresh_pick(
+            state=state,
+            source_message=callback.message,
+            user_id=callback.from_user.id,
+            username=callback.from_user.username,
+        )
+        await callback.answer()
+        return
+    await state.set_state(SurveyStates.choosing_reuse)
+    await state.update_data(last_survey=last_survey, screen_message_id=None)
+    await _render_screen(
+        state=state,
+        source_message=callback.message,
+        text=texts.ASK_REUSE_SURVEY.format(summary=_format_survey_summary(last_survey)),
+        reply_markup=reuse_survey_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "pick:fresh")
+async def pick_fresh(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
+    await state.clear()
+    if last_survey:
+        await state.update_data(last_survey=last_survey)
+    await _start_fresh_pick(
+        state=state,
+        source_message=callback.message,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "pick:reuse")
+async def pick_reuse(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
+    if not _has_survey_payload(last_survey):
+        await _start_fresh_pick(
+            state=state,
+            source_message=callback.message,
+            user_id=callback.from_user.id,
+            username=callback.from_user.username,
+        )
+        await callback.answer()
+        return
     if not await _ensure_access_or_paywall(
         state=state,
         source_message=callback.message,
         user_id=callback.from_user.id,
         username=callback.from_user.username,
     ):
+        await state.update_data(last_survey=last_survey, pending_reuse=True)
         await callback.answer()
         return
-    await state.update_data(pending_start=False)
-    await _render_screen(state=state, source_message=callback.message, text=texts.START_PICK_MODE, reply_markup=mode_keyboard())
+    await state.clear()
+    await state.update_data(
+        **last_survey,
+        last_survey=last_survey,
+        photo_urls=[],
+        photos_count=0,
+        paid_for_current_request=False,
+        pending_reuse=False,
+    )
     await callback.answer()
+    await _emit_recommendations(callback.message, state, callback.from_user)
 
 
 @router.callback_query(SurveyStates.choosing_mode, F.data.startswith("mode:"))
@@ -593,7 +729,10 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
     await message.answer(texts.RESULT_TRIGGER, reply_markup=after_results_keyboard())
     payment_service.consume_request(user_id)
     logger.info("Подбор завершен user_id=%s items=%s", user_id, len(items))
+    survey_snapshot = _snapshot_survey(data)
     await state.clear()
+    if survey_snapshot:
+        await state.update_data(last_survey=survey_snapshot)
 
 
 def _save_recommendations(repository, user: User, context: RecommendationContext, items: list[dict]) -> list[int | None]:
@@ -727,14 +866,30 @@ async def _resume_after_payment(message: Message, state: FSMContext, user: User)
     data = await state.get_data()
     pending_reco = bool(data.get("pending_reco"))
     pending_start = bool(data.get("pending_start"))
-    await state.update_data(pending_reco=False, pending_start=False)
+    pending_reuse = bool(data.get("pending_reuse"))
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
+    await state.update_data(pending_reco=False, pending_start=False, pending_reuse=False)
     if pending_reco and _has_survey_payload(data):
         logger.info("Продолжаю подбор после оплаты user_id=%s", user.id)
+        await _emit_recommendations(message, state, user)
+        return
+    if pending_reuse and _has_survey_payload(last_survey):
+        logger.info("Повтор подбора с прошлой анкетой после оплаты user_id=%s", user.id)
+        await state.clear()
+        await state.update_data(
+            **last_survey,
+            last_survey=last_survey,
+            photo_urls=[],
+            photos_count=0,
+            paid_for_current_request=True,
+        )
         await _emit_recommendations(message, state, user)
         return
     if pending_start:
         logger.info("Открываю выбор режима после оплаты user_id=%s", user.id)
         await state.set_state(SurveyStates.choosing_mode)
+        if last_survey:
+            await state.update_data(last_survey=last_survey)
         await _render_screen(
             state=state,
             source_message=message,
@@ -743,6 +898,8 @@ async def _resume_after_payment(message: Message, state: FSMContext, user: User)
         )
         return
     await state.set_state(SurveyStates.choosing_mode)
+    if last_survey:
+        await state.update_data(last_survey=last_survey)
     await _send_cabinet_as_new_message(message, state, user.id, user.username)
 
 

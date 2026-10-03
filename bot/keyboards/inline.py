@@ -19,7 +19,7 @@ def cabinet_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="💎 Купить подписку", callback_data="buy:subscription")],
             [InlineKeyboardButton(text="⚡ Купить разовый запрос", callback_data="buy:one_time")],
-            [InlineKeyboardButton(text="🎯 Новый подбор", callback_data="menu:start")],
+            [InlineKeyboardButton(text="🎯 Новый подбор", callback_data="pick:again")],
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:home")],
         ]
     )
@@ -120,7 +120,16 @@ def retry_recommendation_keyboard() -> InlineKeyboardMarkup:
 
 def after_results_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🎯 Новый подбор", callback_data="menu:start")]]
+        inline_keyboard=[[InlineKeyboardButton(text="🎯 Новый подбор", callback_data="pick:again")]]
+    )
+
+
+def reuse_survey_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Продолжить с ранее заполненными данными", callback_data="pick:reuse")],
+            [InlineKeyboardButton(text="✏️ Продолжить с новыми данными", callback_data="pick:fresh")],
+        ]
     )
 
 

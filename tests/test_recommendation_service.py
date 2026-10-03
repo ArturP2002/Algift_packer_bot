@@ -106,6 +106,8 @@ class SelectionTests(CatalogTestCase):
         self.assertEqual(len(items), 1)
         offers = items[0]["links"][0]["offers"]
         self.assertEqual(len(offers), 2)
+        # Название синхронизируется с выбранным оффером из каталога.
+        self.assertEqual(items[0]["name"], offers[0]["title"])
         self.assertIn("Подробное пояснение про выбранную модель.", items[0]["reason"])
         self.assertIn("🎉 Почему к поводу: Уместно ко дню рождения.", items[0]["reason"])
         self.assertIn("🎀 Как подарить: Добавьте открытку.", items[0]["reason"])
@@ -130,9 +132,11 @@ class SelectionTests(CatalogTestCase):
         )
         items = self.run_service(gpt)
         # Пустой offer_ids больше не оставляет идею без ссылок — берём топ из каталога.
-        self.assertEqual([item["name"] for item in items], ["Колонка JBL", "Игровая мышь Razer"])
+        self.assertEqual(len(items), 2)
         self.assertTrue(all(item["links"] for item in items))
         self.assertIn("Цена в каталоге", items[0]["reason"])
+        self.assertTrue(any("JBL" in item["name"] or "колонка" in item["name"].lower() for item in items))
+        self.assertTrue(any("Razer" in item["name"] or "мышь" in item["name"].lower() for item in items))
 
     def test_catalog_price_beats_model_estimate(self) -> None:
         gpt = FakeGPTService(
@@ -145,9 +149,10 @@ class SelectionTests(CatalogTestCase):
         )
         items = self.run_service(gpt)
         # Идеи без матча в каталоге не показываем; остаётся только мышь со ссылкой.
-        self.assertEqual([item["name"] for item in items], ["Игровая мышь Razer"])
+        self.assertEqual(len(items), 1)
         self.assertEqual([o["url"] for o in items[0]["links"][0]["offers"]], ["https://example.com/mouse"])
         self.assertIn("Цена в каталоге: 9 999 ₽", items[0]["reason"])
+        self.assertIn("Razer", items[0]["name"])
 
     def test_missing_catalog_idea_is_dropped(self) -> None:
         gpt = FakeGPTService(
@@ -171,7 +176,20 @@ class SelectionTests(CatalogTestCase):
             selection=None,
         )
         items = self.run_service(gpt)
-        self.assertEqual(len(items), 2)
+        self.assertEqual(len(items), 1)
+
+    def test_product_type_family_blocks_duplicate_coffee(self) -> None:
+        service = RecommendationService(FakeGPTService([]), ProductService(), CacheService(3600))
+        ideas = [
+            {"name": "Кофемашина DeLonghi", "category": "кухня", "keywords": ["кофемашина"]},
+            {"name": "Кофеварка Philips", "category": "бытовая техника", "keywords": ["кофеварка"]},
+            {"name": "Кофе в капсулах", "category": "продукты", "keywords": ["кофе"]},
+            {"name": "Игровая мышь", "category": "гейминг", "keywords": ["мышь"]},
+        ]
+        kept = service._limit_diversity(ideas)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(kept[0]["name"], "Кофемашина DeLonghi")
+        self.assertEqual(kept[1]["name"], "Игровая мышь")
 
     def test_reason_fits_telegram_limit(self) -> None:
         long_text = "Очень подробное пояснение. " * 200
@@ -181,6 +199,32 @@ class SelectionTests(CatalogTestCase):
         items = self.run_service(gpt)
         self.assertLessEqual(len(items[0]["reason"]), 3700)
         self.assertIn("Цена в каталоге", items[0]["reason"])
+
+
+class ConsoleVariantTests(CatalogTestCase):
+    products = (
+        ("ps5pro", "Игровая консоль Sony PlayStation 5 Pro + Hogwarts Legacy", 99198),
+        ("ps5slim", "Игровая консоль Sony PlayStation 5 Slim 825GB Blu-Ray Edition", 69990),
+    )
+
+    def test_slim_does_not_link_to_pro(self) -> None:
+        gpt = FakeGPTService(
+            [
+                idea(
+                    "Игровая консоль Sony PlayStation 5 Slim 825GB",
+                    ["playstation 5 slim", "ps5 slim"],
+                    60000,
+                    80000,
+                    category="консоли",
+                )
+            ],
+            [choice(0, ["i0o0"])],  # без фильтра это был бы Pro
+        )
+        items = self.run_service(gpt, make_context(budget=100000, budget_min=50000))
+        self.assertEqual(len(items), 1)
+        self.assertIn("Slim", items[0]["name"])
+        self.assertNotIn("Pro", items[0]["name"])
+        self.assertTrue(all("Pro" not in str(o.get("title") or "") for o in items[0]["links"][0]["offers"]))
 
 
 class PromptTests(CatalogTestCase):
