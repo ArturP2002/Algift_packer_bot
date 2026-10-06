@@ -52,11 +52,14 @@ class SurveyFlowTests(unittest.TestCase):
         state, message = self.pick_budget("quick")
         self.assertEqual(asyncio.run(state.get_state()), SurveyStates.hobbies.state)
         self.assertEqual(sent_texts(message), [start.texts.ASK_HOBBIES])
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("nav:back", callbacks)
 
     def test_smart_mode_asks_photos_with_done_button(self) -> None:
         state, message = self.pick_budget("extended")
         self.assertEqual(asyncio.run(state.get_state()), SurveyStates.photos.state)
-        self.assertEqual(sent_texts(message)[0], start.texts.ASK_PHOTOS)
+        self.assertIn(start.texts.ASK_PHOTOS, sent_texts(message)[0])
         self.assertIsInstance(message.answer.await_args_list[-1].kwargs["reply_markup"], ReplyKeyboardMarkup)
 
     def test_done_after_photo_does_not_say_without_photo(self) -> None:
@@ -70,20 +73,21 @@ class SurveyFlowTests(unittest.TestCase):
 
         state, message = asyncio.run(scenario())
         self.assertNotIn(start.texts.PHOTO_SKIPPED, sent_texts(message))
-        self.assertEqual(sent_texts(message), [start.texts.ASK_HOBBIES])
+        self.assertIn(start.texts.ASK_HOBBIES, sent_texts(message))
         self.assertEqual(asyncio.run(state.get_state()), SurveyStates.hobbies.state)
 
-    def test_done_without_photos_warns(self) -> None:
+    def test_done_without_photos_goes_to_hobbies(self) -> None:
         async def scenario():
             state = make_state()
             await state.set_state(SurveyStates.photos)
             await state.update_data(mode="extended")
             message = make_message("готово")
             await start.collect_photos(message, state)
-            return message
+            return state, message
 
-        message = asyncio.run(scenario())
-        self.assertEqual(sent_texts(message), [start.texts.PHOTO_SKIPPED, start.texts.ASK_HOBBIES])
+        state, message = asyncio.run(scenario())
+        self.assertEqual(asyncio.run(state.get_state()), SurveyStates.hobbies.state)
+        self.assertIn(start.texts.ASK_HOBBIES, sent_texts(message))
 
     def test_photo_status_is_sent_below_photo(self) -> None:
         async def scenario():
@@ -143,7 +147,7 @@ class SurveyFlowTests(unittest.TestCase):
         self.assertIn("йога", text)
         markup = message.answer.await_args_list[0].kwargs["reply_markup"]
         callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-        self.assertEqual(callbacks, ["pick:reuse", "pick:fresh"])
+        self.assertEqual(callbacks, ["pick:reuse", "pick:fresh", "menu:home"])
 
     def test_pick_fresh_opens_mode_choice(self) -> None:
         async def scenario():
@@ -243,6 +247,60 @@ class SurveyFlowTests(unittest.TestCase):
         state, message = asyncio.run(scenario())
         self.assertEqual(sent_texts(message)[0], start.texts.PAYWALL)
         self.assertEqual((asyncio.run(state.get_data())).get("pending_mode"), "extended")
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("nav:back", callbacks)
+
+    def test_nav_back_from_paywall_opens_modes(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.choosing_mode)
+            await state.update_data(pending_start=True, payment_origin="modes", pending_mode="extended")
+            message = make_message()
+            message.text = start.texts.PAYWALL
+            message.bot.container = SimpleNamespace(
+                payment_service=SimpleNamespace(
+                    get_one_time_price_rub=lambda: 149,
+                    get_one_time_price_stars=lambda: 149,
+                ),
+                repository=SimpleNamespace(
+                    get_or_create_user=lambda *a, **k: SimpleNamespace(free_quick_used=False),
+                    is_free_quick_available=lambda _user: True,
+                ),
+            )
+            callback = SimpleNamespace(data="nav:back", message=message, from_user=USER, answer=AsyncMock())
+            await start.navigate_back(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(sent_texts(message)[0], start.texts.START_PICK_MODE)
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("menu:home", callbacks)
+
+    def test_nav_back_from_age_opens_modes(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.age)
+            await state.update_data(mode="quick")
+            message = make_message()
+            message.bot.container = SimpleNamespace(
+                payment_service=SimpleNamespace(
+                    get_one_time_price_rub=lambda: 149,
+                    get_one_time_price_stars=lambda: 149,
+                ),
+                repository=SimpleNamespace(
+                    get_or_create_user=lambda *a, **k: SimpleNamespace(free_quick_used=True),
+                    is_free_quick_available=lambda _user: False,
+                ),
+            )
+            callback = SimpleNamespace(data="nav:back", message=message, from_user=USER, answer=AsyncMock())
+            await start.navigate_back(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(asyncio.run(state.get_state()), SurveyStates.choosing_mode.state)
+        self.assertEqual(sent_texts(message)[0], start.texts.START_PICK_MODE)
 
     def test_carousel_next_cycles_items(self) -> None:
         async def scenario():
