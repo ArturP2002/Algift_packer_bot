@@ -12,12 +12,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     LabeledPrice,
     Message,
     PreCheckoutQuery,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     User,
 )
 
@@ -39,6 +36,7 @@ from bot.keyboards.inline import (
     mode_keyboard,
     payment_choice_keyboard,
     photo_upsell_keyboard,
+    photos_keyboard,
     product_links_keyboard,
     relation_keyboard,
     retry_recommendation_keyboard,
@@ -72,11 +70,6 @@ SURVEY_SNAPSHOT_FIELDS = (
     "budget_min",
     "hobbies",
     "freeform_profile",
-)
-PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="Готово")]],
-    resize_keyboard=True,
-    one_time_keyboard=False,
 )
 
 
@@ -252,35 +245,32 @@ async def _render_photos_step(*, state: FSMContext, source_message: Message) -> 
         state=state,
         source_message=source_message,
         text=f"{texts.ASK_PHOTOS}\n\n{texts.PHOTO_KEYBOARD_HINT}",
-        reply_markup=back_only_keyboard(),
+        reply_markup=photos_keyboard(),
     )
+
+
+async def _finish_photos_step(*, state: FSMContext, source_message: Message) -> None:
+    """Переход с шага фото к интересам только через edit screen."""
     data = await state.get_data()
-    if not data.get("photo_reply_shown"):
-        sent = await source_message.answer("⬇️", reply_markup=PHOTO_REPLY_KEYBOARD)
-        await state.update_data(photo_reply_shown=True, photo_reply_message_id=sent.message_id)
-
-
-async def _hide_photo_reply_keyboard(message: Message, state: FSMContext | None = None) -> None:
-    if state is not None:
-        data = await state.get_data()
-        reply_id = data.get("photo_reply_message_id")
-        if reply_id:
-            try:
-                await message.bot.delete_message(chat_id=message.chat.id, message_id=reply_id)
-            except TelegramBadRequest:
-                pass
-            await state.update_data(photo_reply_message_id=None, photo_reply_shown=False)
-    try:
-        sent = await message.answer("👌", reply_markup=ReplyKeyboardRemove())
-        await message.bot.delete_message(chat_id=message.chat.id, message_id=sent.message_id)
-    except TelegramBadRequest:
+    photos_count = int(data.get("photos_count", 0))
+    # Стираем временный статус под фото, если он был.
+    previous = data.get("photo_status_message_id")
+    if previous:
+        try:
+            await source_message.bot.delete_message(chat_id=source_message.chat.id, message_id=previous)
+        except TelegramBadRequest:
+            pass
+        await state.update_data(photo_status_message_id=None)
+    if not photos_count:
+        # На мгновение не показываем отдельный статус — сразу интересы;
+        # подсказку «без фото» можно вшить в текст hobbies при желании.
         pass
+    await _render_hobbies_step(state=state, source_message=source_message)
 
 
 async def _go_home(*, state: FSMContext, source_message: Message) -> None:
     await state.set_state(SurveyStates.choosing_mode)
     await state.update_data(pending_start=False, pending_mode=None, pending_reco=False, payment_origin=None)
-    await _hide_photo_reply_keyboard(source_message, state)
     await _render_screen(
         state=state,
         source_message=source_message,
@@ -531,7 +521,6 @@ async def navigate_back(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if current == SurveyStates.photos.state:
-        await _hide_photo_reply_keyboard(source, state)
         await state.set_state(SurveyStates.budget)
         await _render_screen(state=state, source_message=source, text=texts.ASK_BUDGET, reply_markup=budget_keyboard())
         await callback.answer()
@@ -845,6 +834,13 @@ async def _replace_photo_status(message: Message, state: FSMContext, text: str) 
     await state.update_data(photo_status_message_id=sent.message_id)
 
 
+@router.callback_query(SurveyStates.photos, F.data == "photos:done")
+async def photos_done(callback: CallbackQuery, state: FSMContext) -> None:
+    async with PHOTO_STATE_LOCKS[callback.from_user.id]:
+        await _finish_photos_step(state=state, source_message=callback.message)
+    await callback.answer()
+
+
 @router.message(SurveyStates.photos)
 async def collect_photos(message: Message, state: FSMContext) -> None:
     async with PHOTO_STATE_LOCKS[message.from_user.id]:
@@ -882,6 +878,17 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
                 await _replace_photo_status(message, state, texts.PHOTO_ERROR)
                 return
             await state.update_data(photos_count=photos_count, photo_urls=photo_urls)
+            # Обновляем основной screen (edit) + короткий статус под последним фото.
+            await _render_screen(
+                state=state,
+                source_message=message,
+                text=(
+                    f"{texts.ASK_PHOTOS}\n\n"
+                    f"{texts.PHOTO_ADDED.format(count=photos_count)}\n\n"
+                    f"{texts.PHOTO_KEYBOARD_HINT}"
+                ),
+                reply_markup=photos_keyboard(),
+            )
             await _replace_photo_status(message, state, texts.PHOTO_ADDED.format(count=photos_count))
             return
 
@@ -890,14 +897,13 @@ async def collect_photos(message: Message, state: FSMContext) -> None:
                 state=state,
                 source_message=message,
                 text=texts.PHOTO_ERROR,
-                reply_markup=back_only_keyboard(),
+                reply_markup=photos_keyboard(),
             )
             await _delete_user_input(message)
             return
 
         await _delete_user_input(message)
-        await _hide_photo_reply_keyboard(message, state)
-        await _render_hobbies_step(state=state, source_message=message)
+        await _finish_photos_step(state=state, source_message=message)
 
 
 @router.message(F.photo, ~StateFilter(SurveyStates.photos))

@@ -33,6 +33,15 @@ def back_only_keyboard(*, back_cb: str = BACK_CB) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[_back_row(back_cb)])
 
 
+def photos_keyboard(*, back_cb: str = BACK_CB) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="photos:done")],
+            _back_row(back_cb),
+        ]
+    )
+
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

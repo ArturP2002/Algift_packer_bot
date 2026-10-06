@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup
 
 from bot.handlers import start
 from bot.states.survey import SurveyStates
@@ -60,15 +59,18 @@ class SurveyFlowTests(unittest.TestCase):
         state, message = self.pick_budget("extended")
         self.assertEqual(asyncio.run(state.get_state()), SurveyStates.photos.state)
         self.assertIn(start.texts.ASK_PHOTOS, sent_texts(message)[0])
-        self.assertIsInstance(message.answer.await_args_list[-1].kwargs["reply_markup"], ReplyKeyboardMarkup)
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertEqual(callbacks, ["photos:done", "nav:back"])
 
     def test_done_after_photo_does_not_say_without_photo(self) -> None:
         async def scenario():
             state = make_state()
             await state.set_state(SurveyStates.photos)
             await state.update_data(mode="extended", photos_count=1, photo_urls=["https://example.com/1.jpg"])
-            message = make_message("Готово")
-            await start.collect_photos(message, state)
+            message = make_message()
+            callback = SimpleNamespace(data="photos:done", message=message, from_user=USER, answer=AsyncMock())
+            await start.photos_done(callback, state)
             return state, message
 
         state, message = asyncio.run(scenario())
@@ -81,8 +83,9 @@ class SurveyFlowTests(unittest.TestCase):
             state = make_state()
             await state.set_state(SurveyStates.photos)
             await state.update_data(mode="extended")
-            message = make_message("готово")
-            await start.collect_photos(message, state)
+            message = make_message()
+            callback = SimpleNamespace(data="photos:done", message=message, from_user=USER, answer=AsyncMock())
+            await start.photos_done(callback, state)
             return state, message
 
         state, message = asyncio.run(scenario())
@@ -93,7 +96,7 @@ class SurveyFlowTests(unittest.TestCase):
         async def scenario():
             state = make_state()
             await state.set_state(SurveyStates.photos)
-            await state.update_data(mode="extended", photo_status_message_id=77)
+            await state.update_data(mode="extended", photo_status_message_id=77, screen_message_id=50)
             message = make_message(photo=[SimpleNamespace(file_id="f1")])
             message.bot.get_file = AsyncMock(return_value=SimpleNamespace(file_path="photos/1.jpg"))
             message.bot.container = SimpleNamespace(gpt_service=SimpleNamespace(photo_has_face=AsyncMock(return_value=True)))
@@ -102,7 +105,7 @@ class SurveyFlowTests(unittest.TestCase):
 
         state, message = asyncio.run(scenario())
         message.bot.delete_message.assert_awaited_once_with(chat_id=USER.id, message_id=77)
-        message.bot.edit_message_text.assert_not_awaited()
+        message.bot.edit_message_text.assert_awaited()
         self.assertEqual(sent_texts(message), [start.texts.PHOTO_ADDED.format(count=1)])
         self.assertEqual(asyncio.run(state.get_data())["photo_status_message_id"], 100)
 
