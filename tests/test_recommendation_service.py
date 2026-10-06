@@ -348,6 +348,25 @@ class PromptTests(CatalogTestCase):
         context.budget_min = 0
         self.assertEqual(context.price_window(), (7000, 11000))
 
+    def test_describe_recipient_marks_missing_hobbies(self) -> None:
+        text = RecommendationService._describe_recipient(make_context(hobbies=""))
+        self.assertIn("Увлечения: не указаны", text)
+        self.assertIn("не придумывай интересы", text)
+        self.assertNotIn("Увлечения и пожелания", text)
+
+    def test_describe_recipient_includes_stated_hobbies(self) -> None:
+        text = RecommendationService._describe_recipient(make_context(hobbies="бег"))
+        self.assertIn("Увлечения и пожелания: бег.", text)
+        self.assertNotIn("не указаны", text)
+
+    def test_describe_recipient_puts_freeform_first(self) -> None:
+        text = RecommendationService._describe_recipient(
+            make_context(hobbies="", freeform_profile="Василий, 20 лет, любит машины")
+        )
+        self.assertIn("Описание от дарителя", text)
+        self.assertIn("Василий, 20 лет, любит машины", text)
+        self.assertLess(text.index("Описание от дарителя"), text.index("Увлечения: не указаны"))
+
 
 class RecommendationFailureTests(CatalogTestCase):
     def test_model_failure_gives_no_template_ideas(self) -> None:

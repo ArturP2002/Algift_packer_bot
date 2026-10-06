@@ -20,3 +20,5 @@ def run_migrations(db: SqliteDatabase) -> None:
         db.execute_sql("CREATE UNIQUE INDEX payment_idempotency_key_idx ON payment(idempotency_key)")
     if not _column_exists(db, "user", "intro_seen"):
         db.execute_sql("ALTER TABLE user ADD COLUMN intro_seen INTEGER DEFAULT 0")
+    if not _column_exists(db, "user", "free_quick_used"):
+        db.execute_sql("ALTER TABLE user ADD COLUMN free_quick_used INTEGER DEFAULT 0")

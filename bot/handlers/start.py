@@ -10,6 +10,8 @@ from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     LabeledPrice,
     Message,
@@ -20,14 +22,16 @@ from aiogram.types import (
 )
 
 from bot.keyboards.inline import (
+    CAROUSEL_PREFIX,
     FEEDBACK_PREFIX,
     access_paywall_keyboard,
-    after_results_keyboard,
     budget_keyboard,
     cabinet_keyboard,
+    carousel_keyboard,
     event_keyboard,
     feedback_given_keyboard,
     gender_keyboard,
+    how_it_works_keyboard,
     main_menu_keyboard,
     mode_keyboard,
     payment_choice_keyboard,
@@ -64,6 +68,7 @@ SURVEY_SNAPSHOT_FIELDS = (
     "budget",
     "budget_min",
     "hobbies",
+    "freeform_profile",
 )
 PHOTO_REPLY_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Готово")]],
@@ -107,21 +112,31 @@ async def _start_fresh_pick(*, state: FSMContext, source_message: Message, user_
     data = await state.get_data()
     last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
     await state.set_state(SurveyStates.choosing_mode)
-    if not await _ensure_access_or_paywall(
-        state=state,
-        source_message=source_message,
-        user_id=user_id,
-        username=username,
-    ):
-        if last_survey:
-            await state.update_data(last_survey=last_survey)
-        return
     await state.update_data(pending_start=False, last_survey=last_survey or None)
+    await _clear_screen(state=state, source_message=source_message)
+    await _render_mode_picker(state=state, source_message=source_message, user_id=user_id, username=username)
+
+
+async def _render_mode_picker(
+    *,
+    state: FSMContext,
+    source_message: Message,
+    user_id: int,
+    username: str | None,
+) -> None:
+    container = source_message.bot.container
+    repository = container.repository
+    payment_service = container.payment_service
+    user = repository.get_or_create_user(user_id, username)
+    free_quick = repository.is_free_quick_available(user)
+    one_time_rub = payment_service.get_one_time_price_rub()
+    one_time_stars = payment_service.get_one_time_price_stars()
+    photo_price = f"{one_time_rub} ₽ / {one_time_stars} XTR"
     await _render_screen(
         state=state,
         source_message=source_message,
         text=texts.START_PICK_MODE,
-        reply_markup=mode_keyboard(),
+        reply_markup=mode_keyboard(free_quick_available=free_quick, photo_price_label=photo_price),
     )
 
 
@@ -131,18 +146,30 @@ def _user_has_access(payment_service, user_id: int, data: dict | None = None) ->
     return bool(access_state.has_subscription or paid_for_current_request or access_state.paid_requests_left > 0)
 
 
+def _can_use_free_quick(repository, user_id: int, username: str | None, mode: str) -> bool:
+    if mode != "quick":
+        return False
+    user = repository.get_or_create_user(user_id, username)
+    return repository.is_free_quick_available(user)
+
+
 async def _ensure_access_or_paywall(
     *,
     state: FSMContext,
     source_message: Message,
     user_id: int,
     username: str | None,
+    allow_free_quick: bool = False,
+    mode: str | None = None,
 ) -> bool:
     """True — доступ есть. False — показан paywall, флоу нужно остановить."""
     container = source_message.bot.container
     payment_service = container.payment_service
     repository = container.repository
     data = await state.get_data()
+    effective_mode = mode or str(data.get("mode") or "")
+    if allow_free_quick and _can_use_free_quick(repository, user_id, username, effective_mode):
+        return True
     if _user_has_access(payment_service, user_id, data):
         return True
     last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else None
@@ -169,6 +196,17 @@ async def _delete_user_input(message: Message) -> None:
         await message.delete()
     except TelegramBadRequest:
         pass
+
+
+async def _clear_screen(*, state: FSMContext, source_message: Message) -> None:
+    data = await state.get_data()
+    screen_message_id = data.get("screen_message_id")
+    if screen_message_id:
+        try:
+            await source_message.bot.delete_message(chat_id=source_message.chat.id, message_id=screen_message_id)
+        except TelegramBadRequest:
+            pass
+    await state.update_data(screen_message_id=None)
 
 
 def _payment_kind_from_marker(marker: str) -> str:
@@ -250,21 +288,16 @@ async def start(message: Message, state: FSMContext) -> None:
     await state.clear()
     container = message.bot.container
     repository = container.repository
-    user = repository.get_or_create_user(message.from_user.id, message.from_user.username)
-
-    if not repository.is_intro_seen(user):
-        await message.answer(texts.INTRO_MESSAGE)
-        repository.mark_intro_seen(user)
-        await asyncio.sleep(5)
+    repository.get_or_create_user(message.from_user.id, message.from_user.username)
 
     await state.set_state(SurveyStates.choosing_mode)
-    await _render_screen(state=state, source_message=message, text=texts.MAIN_MENU, reply_markup=main_menu_keyboard())
+    await _render_screen(state=state, source_message=message, text=texts.SHORT_INTRO, reply_markup=main_menu_keyboard())
 
 
 @router.message(F.text == "/menu")
 async def menu(message: Message, state: FSMContext) -> None:
     await state.set_state(SurveyStates.choosing_mode)
-    await _render_screen(state=state, source_message=message, text=texts.MAIN_MENU, reply_markup=main_menu_keyboard())
+    await _render_screen(state=state, source_message=message, text=texts.SHORT_INTRO, reply_markup=main_menu_keyboard())
 
 
 @router.callback_query(F.data == "menu:home")
@@ -273,8 +306,19 @@ async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await _render_screen(
         state=state,
         source_message=callback.message,
-        text=texts.MAIN_MENU,
+        text=texts.SHORT_INTRO,
         reply_markup=main_menu_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:how")
+async def menu_how(callback: CallbackQuery, state: FSMContext) -> None:
+    await _render_screen(
+        state=state,
+        source_message=callback.message,
+        text=texts.HOW_IT_WORKS,
+        reply_markup=how_it_works_keyboard(),
     )
     await callback.answer()
 
@@ -372,11 +416,14 @@ async def pick_reuse(callback: CallbackQuery, state: FSMContext) -> None:
         )
         await callback.answer()
         return
+    mode = str(last_survey.get("mode") or "quick")
     if not await _ensure_access_or_paywall(
         state=state,
         source_message=callback.message,
         user_id=callback.from_user.id,
         username=callback.from_user.username,
+        allow_free_quick=True,
+        mode=mode,
     ):
         await state.update_data(last_survey=last_survey, pending_reuse=True)
         await callback.answer()
@@ -396,17 +443,21 @@ async def pick_reuse(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(SurveyStates.choosing_mode, F.data.startswith("mode:"))
 async def choose_mode(callback: CallbackQuery, state: FSMContext) -> None:
+    mode = callback.data.split(":")[1]
     if not await _ensure_access_or_paywall(
         state=state,
         source_message=callback.message,
         user_id=callback.from_user.id,
         username=callback.from_user.username,
+        allow_free_quick=True,
+        mode=mode,
     ):
+        await state.update_data(pending_mode=mode, pending_start=True)
         await callback.answer()
         return
-    mode = callback.data.split(":")[1]
-    await state.update_data(mode=mode, pending_start=False)
+    await state.update_data(mode=mode, pending_start=False, pending_mode=None, using_free_quick=(mode == "quick"))
     await state.set_state(SurveyStates.age)
+    await _clear_screen(state=state, source_message=callback.message)
     hint = texts.QUICK_MODE_HINT if mode == "quick" else texts.SMART_MODE_HINT
     await _render_screen(state=state, source_message=callback.message, text=f"{hint}\n\n{texts.ASK_AGE}")
     await callback.answer()
@@ -420,12 +471,14 @@ async def start_extended_from_upsell(callback: CallbackQuery, state: FSMContext)
         source_message=callback.message,
         user_id=callback.from_user.id,
         username=callback.from_user.username,
+        mode="extended",
     ):
+        await state.update_data(pending_mode="extended", pending_start=True)
         await callback.answer()
         return
     await state.clear()
     await state.set_state(SurveyStates.age)
-    await state.update_data(mode="extended", screen_message_id=None)
+    await state.update_data(mode="extended", screen_message_id=None, using_free_quick=False)
     await _render_screen(
         state=state,
         source_message=callback.message,
@@ -661,13 +714,17 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
             reply_markup=cabinet_keyboard(),
         )
         return
-    if not _user_has_access(payment_service, user_id, data):
+    mode = str(data.get("mode") or "quick")
+    can_free = _can_use_free_quick(repository, user_id, user.username, mode)
+    has_access = _user_has_access(payment_service, user_id, data)
+    if not has_access and not can_free:
         await state.set_state(SurveyStates.hobbies)
         await message.answer(texts.PAYWALL, reply_markup=access_paywall_keyboard())
         await state.update_data(pending_reco=True, pending_start=False, paid_for_current_request=False)
         repository.get_or_create_user(user_id, user.username)
         logger.info("Показан paywall user_id=%s", user_id)
         return
+    using_free_quick = bool(can_free and not has_access)
 
     recommendation_service = container.recommendation_service
     gpt_service = container.gpt_service
@@ -696,6 +753,7 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
         budget=int(data["budget"]),
         budget_min=int(data.get("budget_min") or 0),
         hobbies=data.get("hobbies", ""),
+        freeform_profile=str(data.get("freeform_profile") or ""),
         photos_count=int(data.get("photos_count", 0)),
         photo_insights=photo_insights,
         exclude_names=exclude_names,
@@ -713,26 +771,47 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
         )
         return
     item_ids = _save_recommendations(repository, user, context, items)
-    if len(items) < 6:
+    shown_items = list(items[:6])
+    shown_ids = list(item_ids[:6])
+    if len(shown_items) < 6:
         await message.answer(
             "Нашел меньше вариантов, чем обычно: показываю только идеи, которые есть в каталоге и попали в ваш бюджет."
         )
-    await message.answer("🎯 Основная идея подарка:")
-    await _send_item(message, items[0], item_ids[0])
-    if len(items) > 1:
-        await message.answer("✨ Еще идеи:")
-        await message.answer(texts.BUDGET_NOTE)
-    for item, item_id in list(zip(items, item_ids))[1:6]:
-        await _send_item(message, item, item_id)
+    await message.answer(texts.BUDGET_NOTE)
+    await _send_carousel(
+        message=message,
+        state=state,
+        items=shown_items,
+        item_ids=shown_ids,
+        index=0,
+    )
     if data.get("mode") == "quick":
         await message.answer(texts.UPSELL_QUICK, reply_markup=photo_upsell_keyboard())
-    await message.answer(texts.RESULT_TRIGGER, reply_markup=after_results_keyboard())
-    payment_service.consume_request(user_id)
-    logger.info("Подбор завершен user_id=%s items=%s", user_id, len(items))
+
+    if using_free_quick:
+        repository.mark_free_quick_used(db_user)
+    else:
+        payment_service.consume_request(user_id)
+    logger.info("Подбор завершен user_id=%s items=%s free=%s", user_id, len(shown_items), using_free_quick)
     survey_snapshot = _snapshot_survey(data)
-    await state.clear()
-    if survey_snapshot:
-        await state.update_data(last_survey=survey_snapshot)
+    carousel_payload = {
+        "carousel_items": shown_items,
+        "carousel_item_ids": shown_ids,
+        "carousel_index": 0,
+    }
+    data_after = await state.get_data()
+    carousel_message_id = data_after.get("carousel_message_id")
+    await state.set_state(SurveyStates.viewing_results)
+    await state.update_data(
+        last_survey=survey_snapshot or None,
+        using_free_quick=False,
+        paid_for_current_request=False,
+        **carousel_payload,
+        carousel_message_id=carousel_message_id,
+        **{k: data.get(k) for k in SURVEY_SNAPSHOT_FIELDS if k in data},
+        photo_urls=data.get("photo_urls", []),
+        photos_count=data.get("photos_count", 0),
+    )
 
 
 def _save_recommendations(repository, user: User, context: RecommendationContext, items: list[dict]) -> list[int | None]:
@@ -748,7 +827,7 @@ def _save_recommendations(repository, user: User, context: RecommendationContext
                 "event": context.event,
                 "relation": context.relation,
                 "budget": context.budget,
-                "hobbies": context.hobbies,
+                "hobbies": context.hobbies or context.freeform_profile,
                 "photos_count": context.photos_count,
             },
         )
@@ -758,15 +837,80 @@ def _save_recommendations(repository, user: User, context: RecommendationContext
         return [None] * len(items)
 
 
-async def _send_item(message: Message, item: dict, item_id: int | None = None) -> None:
-    links = item.get("links") or []
-    markup = product_links_keyboard(links[0] if links else None, item_id)
+def _format_item_text(item: dict) -> str:
     text = texts.ITEM_TEMPLATE.format(
         name=item.get("name", "Подарок"),
         reason=item.get("reason", "Подходит по вашему запросу."),
     )
-    if links and markup:
+    links = item.get("links") or []
+    if links:
         text += texts.ITEM_LINKS_HINT
+    else:
+        text += texts.ITEM_NO_LINKS_HINT
+    return text
+
+
+def _item_link_group(item: dict) -> dict | None:
+    links = item.get("links") or []
+    return links[0] if links else None
+
+
+async def _send_carousel(
+    *,
+    message: Message,
+    state: FSMContext,
+    items: list[dict],
+    item_ids: list[int | None],
+    index: int,
+) -> None:
+    if not items:
+        return
+    index = index % len(items)
+    item = items[index]
+    item_id = item_ids[index] if index < len(item_ids) else None
+    markup = carousel_keyboard(
+        index=index,
+        total=len(items),
+        link_group=_item_link_group(item),
+        item_id=item_id,
+    )
+    sent = await message.answer(_format_item_text(item), reply_markup=markup)
+    await state.update_data(
+        carousel_items=items,
+        carousel_item_ids=item_ids,
+        carousel_index=index,
+        carousel_message_id=sent.message_id,
+    )
+
+
+async def _edit_carousel(callback: CallbackQuery, state: FSMContext, index: int) -> None:
+    data = await state.get_data()
+    items = data.get("carousel_items") or []
+    item_ids = data.get("carousel_item_ids") or []
+    if not isinstance(items, list) or not items:
+        await callback.answer("Подборка устарела — начните новый подбор.")
+        return
+    index = index % len(items)
+    item = items[index]
+    item_id = item_ids[index] if index < len(item_ids) else None
+    markup = carousel_keyboard(
+        index=index,
+        total=len(items),
+        link_group=_item_link_group(item),
+        item_id=item_id,
+    )
+    try:
+        await callback.message.edit_text(_format_item_text(item), reply_markup=markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+    await state.update_data(carousel_index=index, carousel_message_id=callback.message.message_id)
+
+
+async def _send_item(message: Message, item: dict, item_id: int | None = None) -> None:
+    links = item.get("links") or []
+    markup = product_links_keyboard(links[0] if links else None, item_id)
+    text = _format_item_text(item)
     await message.answer(text, reply_markup=markup)
 
 
@@ -793,6 +937,163 @@ async def item_feedback(callback: CallbackQuery) -> None:
         )
     except TelegramBadRequest:
         pass
+
+
+@router.callback_query(F.data.startswith(CAROUSEL_PREFIX))
+async def carousel_actions(callback: CallbackQuery, state: FSMContext) -> None:
+    action = callback.data[len(CAROUSEL_PREFIX) :]
+    data = await state.get_data()
+    items = data.get("carousel_items") or []
+    item_ids = data.get("carousel_item_ids") or []
+    index = int(data.get("carousel_index") or 0)
+    if action == "noop":
+        await callback.answer()
+        return
+    if action in {"prev", "next"}:
+        if not isinstance(items, list) or not items:
+            await callback.answer("Подборка устарела — начните новый подбор.")
+            return
+        delta = -1 if action == "prev" else 1
+        await _edit_carousel(callback, state, index + delta)
+        await callback.answer()
+        return
+    if action == "more":
+        last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else _snapshot_survey(data)
+        if not _has_survey_payload(last_survey):
+            await _start_fresh_pick(
+                state=state,
+                source_message=callback.message,
+                user_id=callback.from_user.id,
+                username=callback.from_user.username,
+            )
+            await callback.answer()
+            return
+        mode = str(last_survey.get("mode") or "quick")
+        if not await _ensure_access_or_paywall(
+            state=state,
+            source_message=callback.message,
+            user_id=callback.from_user.id,
+            username=callback.from_user.username,
+            allow_free_quick=False,
+            mode=mode,
+        ):
+            await state.update_data(last_survey=last_survey, pending_reuse=True)
+            await callback.answer()
+            return
+        await state.update_data(
+            **last_survey,
+            last_survey=last_survey,
+            photo_urls=[],
+            photos_count=0,
+            paid_for_current_request=False,
+            using_free_quick=False,
+            freeform_profile=last_survey.get("freeform_profile", ""),
+        )
+        await callback.answer()
+        await _emit_recommendations(callback.message, state, callback.from_user)
+        return
+    if action == "edit":
+        await state.set_state(SurveyStates.edit_conditions)
+        await callback.message.answer(texts.ASK_EDIT_CONDITIONS)
+        await callback.answer()
+        return
+    if action == "similar":
+        if not isinstance(items, list) or not items:
+            await callback.answer("Подборка устарела — начните новый подбор.")
+            return
+        index = index % len(items)
+        item = items[index]
+        await _send_similar_products(callback.message, item)
+        await callback.answer()
+        return
+    await callback.answer()
+
+
+@router.message(SurveyStates.edit_conditions)
+async def edit_conditions(message: Message, state: FSMContext) -> None:
+    description = (message.text or "").strip()
+    if len(description) < 3:
+        await message.answer(texts.EDIT_CONDITIONS_EMPTY)
+        await _delete_user_input(message)
+        return
+    data = await state.get_data()
+    last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else _snapshot_survey(data)
+    if not _has_survey_payload(last_survey) and not _has_survey_payload(data):
+        await message.answer("Сначала пройдите короткий опрос — нажмите «подобрать подарок».")
+        await _delete_user_input(message)
+        return
+    base = last_survey if _has_survey_payload(last_survey) else data
+    mode = str(base.get("mode") or "quick")
+    if not await _ensure_access_or_paywall(
+        state=state,
+        source_message=message,
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        allow_free_quick=False,
+        mode=mode,
+    ):
+        await state.update_data(
+            **{k: base.get(k) for k in SURVEY_SNAPSHOT_FIELDS if k in base},
+            last_survey=base if isinstance(base, dict) else None,
+            freeform_profile=description,
+            pending_reco=True,
+            hobbies=base.get("hobbies", ""),
+        )
+        await _delete_user_input(message)
+        return
+    await state.update_data(
+        **{k: base.get(k) for k in SURVEY_SNAPSHOT_FIELDS if k in base},
+        freeform_profile=description,
+        hobbies="",
+        photo_urls=[],
+        photos_count=0,
+        using_free_quick=False,
+        last_survey={**base, "freeform_profile": description, "hobbies": ""},
+    )
+    await _delete_user_input(message)
+    await _emit_recommendations(message, state)
+
+
+async def _send_similar_products(message: Message, item: dict) -> None:
+    product_service = message.bot.container.product_service
+    keywords = item.get("keywords") or []
+    if not isinstance(keywords, list):
+        keywords = []
+    name = str(item.get("name") or "").strip()
+    search_keywords = [str(k).strip() for k in keywords if str(k).strip()]
+    if name:
+        search_keywords = [name, *search_keywords]
+    if not search_keywords:
+        await message.answer(texts.SIMILAR_EMPTY)
+        return
+    offers = product_service.find_offers(search_keywords, max_offers=5, limit_per_market=2)
+    # Исключаем точные URL уже показанных офферов текущего подарка.
+    existing_urls = {
+        str(offer.get("url") or "").strip()
+        for group in (item.get("links") or [])
+        if isinstance(group, dict)
+        for offer in (group.get("offers") or [])
+        if isinstance(offer, dict)
+    }
+    filtered = [offer for offer in offers if str(offer.get("url") or "").strip() not in existing_urls]
+    if not filtered:
+        # Без исключения — лучше показать хоть что-то из той же категории.
+        filtered = offers
+    if not filtered:
+        await message.answer(texts.SIMILAR_EMPTY)
+        return
+    lines = [texts.SIMILAR_HEADER.format(name=name or "подарку")]
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for offer in filtered[:5]:
+        title = str(offer.get("title") or offer.get("label") or "Товар").strip()
+        price = offer.get("price")
+        price_label = f"{price:,} ₽".replace(",", " ") if isinstance(price, int) and price > 0 else "цена в магазине"
+        lines.append(texts.SIMILAR_ITEM.format(title=title[:80], price=price_label))
+        url = str(offer.get("url") or "").strip()
+        if url:
+            rows.append([InlineKeyboardButton(text=(offer.get("label") or title)[:64], url=url)])
+    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
 
 
 @router.callback_query(F.data == "reco:retry")
@@ -867,8 +1168,9 @@ async def _resume_after_payment(message: Message, state: FSMContext, user: User)
     pending_reco = bool(data.get("pending_reco"))
     pending_start = bool(data.get("pending_start"))
     pending_reuse = bool(data.get("pending_reuse"))
+    pending_mode = data.get("pending_mode")
     last_survey = data.get("last_survey") if isinstance(data.get("last_survey"), dict) else {}
-    await state.update_data(pending_reco=False, pending_start=False, pending_reuse=False)
+    await state.update_data(pending_reco=False, pending_start=False, pending_reuse=False, pending_mode=None)
     if pending_reco and _has_survey_payload(data):
         logger.info("Продолжаю подбор после оплаты user_id=%s", user.id)
         await _emit_recommendations(message, state, user)
@@ -882,19 +1184,34 @@ async def _resume_after_payment(message: Message, state: FSMContext, user: User)
             photo_urls=[],
             photos_count=0,
             paid_for_current_request=True,
+            using_free_quick=False,
         )
         await _emit_recommendations(message, state, user)
+        return
+    if pending_mode in {"quick", "extended"}:
+        logger.info("Открываю анкету режима %s после оплаты user_id=%s", pending_mode, user.id)
+        await state.set_state(SurveyStates.age)
+        await state.update_data(
+            mode=pending_mode,
+            pending_start=False,
+            using_free_quick=False,
+            paid_for_current_request=True,
+            last_survey=last_survey or None,
+        )
+        await _clear_screen(state=state, source_message=message)
+        hint = texts.QUICK_MODE_HINT if pending_mode == "quick" else texts.SMART_MODE_HINT
+        await _render_screen(state=state, source_message=message, text=f"{hint}\n\n{texts.ASK_AGE}")
         return
     if pending_start:
         logger.info("Открываю выбор режима после оплаты user_id=%s", user.id)
         await state.set_state(SurveyStates.choosing_mode)
         if last_survey:
             await state.update_data(last_survey=last_survey)
-        await _render_screen(
+        await _render_mode_picker(
             state=state,
             source_message=message,
-            text=texts.START_PICK_MODE,
-            reply_markup=mode_keyboard(),
+            user_id=user.id,
+            username=user.username,
         )
         return
     await state.set_state(SurveyStates.choosing_mode)

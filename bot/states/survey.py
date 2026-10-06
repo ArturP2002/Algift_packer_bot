@@ -13,3 +13,5 @@ class SurveyStates(StatesGroup):
     custom_budget = State()
     photos = State()
     hobbies = State()
+    viewing_results = State()
+    edit_conditions = State()

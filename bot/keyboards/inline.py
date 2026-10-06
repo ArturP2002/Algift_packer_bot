@@ -8,8 +8,18 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать", callback_data="menu:start")],
+            [InlineKeyboardButton(text="🎁 подобрать подарок", callback_data="menu:start")],
+            [InlineKeyboardButton(text="ℹ️ как это работает", callback_data="menu:how")],
+        ]
+    )
+
+
+def how_it_works_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 подобрать подарок", callback_data="menu:start")],
             [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu:cabinet")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:home")],
         ]
     )
 
@@ -25,11 +35,18 @@ def cabinet_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def mode_keyboard() -> InlineKeyboardMarkup:
+def mode_keyboard(*, free_quick_available: bool = True, photo_price_label: str = "") -> InlineKeyboardMarkup:
+    if free_quick_available:
+        quick_label = "⚡ Быстрый подбор (первый бесплатно)"
+    else:
+        quick_label = "⚡ Быстрый подбор"
+    photo_label = "🔍 Умный подбор (с фото)"
+    if photo_price_label:
+        photo_label = f"{photo_label} — {photo_price_label}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⚡ Быстрый подбор", callback_data="mode:quick")],
-            [InlineKeyboardButton(text="🔍 Умный подбор (с фото)", callback_data="mode:extended")],
+            [InlineKeyboardButton(text=quick_label, callback_data="mode:quick")],
+            [InlineKeyboardButton(text=photo_label, callback_data="mode:extended")],
         ]
     )
 
@@ -74,6 +91,7 @@ def budget_keyboard() -> InlineKeyboardMarkup:
 
 
 FEEDBACK_PREFIX = "fb:"
+CAROUSEL_PREFIX = "car:"
 
 
 def product_links_keyboard(link_group: dict[str, Any] | None, item_id: int | None = None) -> InlineKeyboardMarkup | None:
@@ -99,6 +117,44 @@ def product_links_keyboard(link_group: dict[str, Any] | None, item_id: int | Non
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+def carousel_keyboard(
+    *,
+    index: int,
+    total: int,
+    link_group: dict[str, Any] | None,
+    item_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append(
+        [
+            InlineKeyboardButton(text="⬅️", callback_data=f"{CAROUSEL_PREFIX}prev"),
+            InlineKeyboardButton(text=f"({index + 1}/{total})", callback_data=f"{CAROUSEL_PREFIX}noop"),
+            InlineKeyboardButton(text="➡️", callback_data=f"{CAROUSEL_PREFIX}next"),
+        ]
+    )
+    offers = (link_group or {}).get("offers")
+    if isinstance(offers, list):
+        for offer in offers:
+            if not isinstance(offer, dict):
+                continue
+            url = str(offer.get("url") or "").strip()
+            label = str(offer.get("label") or offer.get("marketplace") or "Купить").strip()
+            if not url:
+                continue
+            rows.append([InlineKeyboardButton(text=label[:64], url=url)])
+    if item_id is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(text="👍 Подходит", callback_data=f"{FEEDBACK_PREFIX}{item_id}:up"),
+                InlineKeyboardButton(text="👎 Мимо", callback_data=f"{FEEDBACK_PREFIX}{item_id}:down"),
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="🔄 подобрать ещё", callback_data=f"{CAROUSEL_PREFIX}more")])
+    rows.append([InlineKeyboardButton(text="✏️ Изменить условия", callback_data=f"{CAROUSEL_PREFIX}edit")])
+    rows.append([InlineKeyboardButton(text="🔎 найти похожие", callback_data=f"{CAROUSEL_PREFIX}similar")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def feedback_given_keyboard(markup: InlineKeyboardMarkup | None, vote: int) -> InlineKeyboardMarkup:
     """Кнопки товаров остаются, ряд оценки заменяется отметкой о выбранной оценке."""
     rows = [
@@ -109,7 +165,6 @@ def feedback_given_keyboard(markup: InlineKeyboardMarkup | None, vote: int) -> I
     label = "✅ Оценка учтена: подходит" if vote > 0 else "✅ Оценка учтена: мимо"
     rows.append([InlineKeyboardButton(text=label, callback_data=f"{FEEDBACK_PREFIX}done")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 
 def retry_recommendation_keyboard() -> InlineKeyboardMarkup:

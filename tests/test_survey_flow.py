@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -162,9 +162,14 @@ class SurveyFlowTests(unittest.TestCase):
             message = make_message()
             message.bot.container = SimpleNamespace(
                 payment_service=SimpleNamespace(
-                    get_access_state=lambda _uid: SimpleNamespace(has_subscription=True, paid_requests_left=0)
+                    get_access_state=lambda _uid: SimpleNamespace(has_subscription=True, paid_requests_left=0),
+                    get_one_time_price_rub=lambda: 149,
+                    get_one_time_price_stars=lambda: 149,
                 ),
-                repository=SimpleNamespace(get_or_create_user=lambda *a, **k: None),
+                repository=SimpleNamespace(
+                    get_or_create_user=lambda *a, **k: SimpleNamespace(free_quick_used=False),
+                    is_free_quick_available=lambda _user: True,
+                ),
             )
             callback = SimpleNamespace(data="pick:fresh", message=message, from_user=USER, answer=AsyncMock())
             await start.pick_fresh(callback, state)
@@ -173,6 +178,119 @@ class SurveyFlowTests(unittest.TestCase):
         state, message = asyncio.run(scenario())
         self.assertEqual(asyncio.run(state.get_state()), SurveyStates.choosing_mode.state)
         self.assertEqual(sent_texts(message)[0], start.texts.START_PICK_MODE)
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        labels = [btn.text for row in markup.inline_keyboard for btn in row]
+        self.assertTrue(any("бесплатно" in label for label in labels))
+        self.assertTrue(any("149" in label for label in labels))
+
+    def test_start_shows_short_intro(self) -> None:
+        async def scenario():
+            state = make_state()
+            message = make_message()
+            message.bot.container = SimpleNamespace(
+                repository=SimpleNamespace(get_or_create_user=lambda *a, **k: SimpleNamespace())
+            )
+            await start.start(message, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(sent_texts(message)[0], start.texts.SHORT_INTRO)
+        markup = message.answer.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertEqual(callbacks, ["menu:start", "menu:how"])
+
+    def test_free_quick_mode_skips_paywall(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.choosing_mode)
+            message = make_message()
+            message.bot.container = SimpleNamespace(
+                payment_service=SimpleNamespace(
+                    get_access_state=lambda _uid: SimpleNamespace(has_subscription=False, paid_requests_left=0),
+                ),
+                repository=SimpleNamespace(
+                    get_or_create_user=lambda *a, **k: SimpleNamespace(free_quick_used=False),
+                    is_free_quick_available=lambda _user: True,
+                ),
+            )
+            callback = SimpleNamespace(data="mode:quick", message=message, from_user=USER, answer=AsyncMock())
+            await start.choose_mode(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(asyncio.run(state.get_state()), SurveyStates.age.state)
+        self.assertIn(start.texts.ASK_AGE, sent_texts(message)[0])
+        self.assertTrue((asyncio.run(state.get_data())).get("using_free_quick"))
+
+    def test_extended_mode_shows_paywall_without_access(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.choosing_mode)
+            message = make_message()
+            message.bot.container = SimpleNamespace(
+                payment_service=SimpleNamespace(
+                    get_access_state=lambda _uid: SimpleNamespace(has_subscription=False, paid_requests_left=0),
+                ),
+                repository=SimpleNamespace(
+                    get_or_create_user=lambda *a, **k: SimpleNamespace(free_quick_used=False),
+                    is_free_quick_available=lambda _user: True,
+                ),
+            )
+            callback = SimpleNamespace(data="mode:extended", message=message, from_user=USER, answer=AsyncMock())
+            await start.choose_mode(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual(sent_texts(message)[0], start.texts.PAYWALL)
+        self.assertEqual((asyncio.run(state.get_data())).get("pending_mode"), "extended")
+
+    def test_carousel_next_cycles_items(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.viewing_results)
+            items = [
+                {"name": "A", "reason": "r1", "keywords": ["a"], "links": []},
+                {"name": "B", "reason": "r2", "keywords": ["b"], "links": []},
+            ]
+            await state.update_data(carousel_items=items, carousel_item_ids=[1, 2], carousel_index=0)
+            message = make_message()
+            message.message_id = 555
+            message.edit_text = AsyncMock()
+            callback = SimpleNamespace(
+                data="car:next",
+                message=message,
+                from_user=USER,
+                answer=AsyncMock(),
+            )
+            await start.carousel_actions(callback, state)
+            return state, message
+
+        state, message = asyncio.run(scenario())
+        self.assertEqual((asyncio.run(state.get_data()))["carousel_index"], 1)
+        message.edit_text.assert_awaited_once()
+        self.assertIn("B", message.edit_text.await_args.args[0])
+
+    def test_hobbies_skip_stores_empty(self) -> None:
+        async def scenario():
+            state = make_state()
+            await state.set_state(SurveyStates.hobbies)
+            await state.update_data(
+                mode="quick",
+                age=25,
+                gender="женский",
+                event="birthday",
+                relation="friend",
+                budget=5000,
+            )
+            message = make_message("нет")
+            with patch.object(start, "_emit_recommendations", AsyncMock()) as emit:
+                await start.hobbies(message, state)
+                return state, emit
+
+        state, emit = asyncio.run(scenario())
+        self.assertEqual((asyncio.run(state.get_data()))["hobbies"], "")
+        emit.assert_awaited_once()
+
 
 
 if __name__ == "__main__":

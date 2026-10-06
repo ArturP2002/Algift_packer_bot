@@ -25,6 +25,7 @@ class User(BaseModel):
     telegram_id = IntegerField(unique=True)
     username = CharField(null=True)
     intro_seen = BooleanField(default=False)
+    free_quick_used = BooleanField(default=False)
     created_at = DateTimeField(default=datetime.utcnow)
 
 

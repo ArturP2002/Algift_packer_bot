@@ -252,3 +252,12 @@ class Repository:
     def mark_intro_seen(self, user: User) -> None:
         user.intro_seen = True
         user.save()
+
+    def is_free_quick_available(self, user: User) -> bool:
+        return not bool(user.free_quick_used)
+
+    def mark_free_quick_used(self, user: User) -> None:
+        if user.free_quick_used:
+            return
+        user.free_quick_used = True
+        user.save()
