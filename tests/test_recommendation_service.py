@@ -116,11 +116,20 @@ class SelectionTests(CatalogTestCase):
 
     def test_selection_failure_falls_back_to_search(self) -> None:
         gpt = FakeGPTService(
-            [idea("Колонка JBL", ["колонка jbl"], 8000, 11000, pitch="Он любит музыку в походах.")], selection=None
+            [
+                idea(
+                    "Колонка JBL",
+                    ["колонка jbl"],
+                    8000,
+                    11000,
+                    pitch="Вы написали, что он ходит в походы — колонка переживет дождь.",
+                )
+            ],
+            selection=None,
         )
-        items = self.run_service(gpt)
+        items = self.run_service(gpt, make_context(hobbies="походы"))
         self.assertEqual(len(items[0]["links"][0]["offers"]), 3)
-        self.assertTrue(items[0]["reason"].startswith("Он любит музыку в походах."))
+        self.assertTrue(items[0]["reason"].startswith("Вы написали, что он ходит в походы"))
 
     def test_empty_choice_falls_back_to_catalog_offers(self) -> None:
         gpt = FakeGPTService(
@@ -356,7 +365,8 @@ class PromptTests(CatalogTestCase):
 
     def test_describe_recipient_includes_stated_hobbies(self) -> None:
         text = RecommendationService._describe_recipient(make_context(hobbies="бег"))
-        self.assertIn("Увлечения и пожелания: бег.", text)
+        self.assertIn("Разрешённые увлечения", text)
+        self.assertIn("«бег»", text)
         self.assertNotIn("не указаны", text)
 
     def test_describe_recipient_puts_freeform_first(self) -> None:
@@ -366,6 +376,43 @@ class PromptTests(CatalogTestCase):
         self.assertIn("Описание от дарителя", text)
         self.assertIn("Василий, 20 лет, любит машины", text)
         self.assertLess(text.index("Описание от дарителя"), text.index("Увлечения: не указаны"))
+
+    def test_narrative_invents_movies_and_cooking(self) -> None:
+        context = make_context(hobbies="хоккей, машины, рыбалка")
+        self.assertTrue(
+            RecommendationService._narrative_invents_hobbies(
+                "Вы написали, что ваш папа любит смотреть хоккейные матчи и фильмы.",
+                context,
+            )
+        )
+        self.assertTrue(
+            RecommendationService._narrative_invents_hobbies(
+                "Вы написали, что ваш папа увлекается кулинарией и любит готовить.",
+                context,
+            )
+        )
+        self.assertFalse(
+            RecommendationService._narrative_invents_hobbies(
+                "Вы написали, что он увлекается хоккеем — большой экран удобен для матчей.",
+                context,
+            )
+        )
+
+    def test_align_rewrites_invented_hobby_claims(self) -> None:
+        context = make_context(hobbies="хоккей, машины, рыбалка")
+        service = RecommendationService(FakeGPTService([]), ProductService(), CacheService(3600))
+        choice = {
+            "why_for_person": "Вы написали, что папа увлекается кулинарией и любит готовить.",
+            "occasion_fit": "К дню рождения уместно.",
+            "practical_value": "Пригодится на кухне.",
+            "presentation_tip": "Упакуйте красиво.",
+        }
+        offer = {"title": "STEINFORD Аэрогриль AF-02", "marketplace": "ozon"}
+        item = {"name": "Аэрогриль", "pitch": choice["why_for_person"]}
+        aligned = service._align_narrative_with_offer(item, choice, offer, context=context)
+        self.assertIn("хоккей, машины, рыбалка", aligned["why_for_person"])
+        self.assertNotIn("кулинар", aligned["why_for_person"].lower())
+        self.assertNotIn("готовить", aligned["why_for_person"].lower())
 
 
 class RecommendationFailureTests(CatalogTestCase):

@@ -129,13 +129,14 @@ _IDEAS_INSTRUCTIONS = f"""Ты — внимательный консультан
   · 5–10 тыс. ₽ — заметные гаджеты и наборы;
   · 10–20+ тыс. ₽ — премиальные или крупные вещи.
   Не предлагай «ту же колонку / те же наушники другого поколения» только из‑за другого бюджета.
-- Состав подборки: опирайся ТОЛЬКО на факты из профиля. Если увлечения указаны — 2-3 идеи по ним; если увлечения НЕ указаны — не выдумывай хобби, подбирай по возрасту, отношениям, поводу и бюджету (практичная вещь, «вау», уют). Все идеи — разных категорий и типов товаров: не больше {_MAX_PER_CATEGORY} идеи одной категории. Три кофемашины или две колонки в одной выдаче — недопустимо.
+- Состав подборки: опирайся ТОЛЬКО на факты из профиля. Если увлечения указаны — минимум 2-3 идеи прямо по ним (дословно из списка, без «похожих» тем). Если увлечения НЕ указаны — не выдумывай хобби, подбирай по возрасту, отношениям, поводу и бюджету (практичная вещь, «вау», уют). Все идеи — разных категорий и типов товаров: не больше {_MAX_PER_CATEGORY} идеи одной категории. Три кофемашины или две колонки в одной выдаче — недопустимо.
+- Увлечения — закрытый список. Пиши и подбирай ТОЛЬКО то, что даритель указал дословно. Запрещено добавлять, заменять и «додумывать» интересы: хоккей ≠ фильмы/кино; рыбалка ≠ готовка/кухня; машины ≠ гаджеты «для дома» без связи с авто. Нельзя в pitch писать «любит фильмы / готовить / музыку», если этого нет в профиле.
 - category — одно-два слова: «аудио», «настольные игры», «уход за собой». Для похожих товаров используй одну и ту же category.
 - name — обязательно тип товара + бренд/модель словами из каталога: «Проектор InFocus …», «Планшет HUAWEI …», «Портативная колонка JBL Flip 6». Нельзя название из одного бренда/модели без типа («InFocus IN0026SL», «MatePad Mini»).
 - keywords — 2 запроса для поиска, по 2-4 слова. Оба обязаны содержать тип товара. Первый — точный (тип + бренд/модель), второй — чуть общий, но всё ещё с типом («проектор infocus», затем «проектор infocus in0026sl» или «портативный проектор»). Нельзя второй запрос без типа («для блога», «гаджет»). Тип в keywords обязан совпадать с типом в name.
-- pitch — 1-2 предложения про ЭТУ же модель из name. Обязательно явно сошлись на факт из профиля дарителя (что он написал про человека, отношения, повод, возраст или увлечения). Формулировки вроде «вы написали, что…» / «раз человек любит…». Запрещено хвалить товар абстрактно («отличный подарок», «порадует любого», «хорошее качество») без привязки к словам пользователя. Если увлечения не указаны — не придумывай их и не ссылайся на несуществующие интересы.
-  Хорошо: «Вы написали, что он каждые выходные в походах — колонка с защитой от воды переживет и дождь, и костер».
-  Плохо: «Отличный подарок, который порадует любого» или pitch про проектор при name про планшет, или «она любит бегать», если в профиле этого нет.
+- pitch — 1-2 предложения про ЭТУ же модель из name. Если цитируешь увлечения («вы написали, что…»), повторяй их ДОСЛОВНО из профиля — без синонимов и без новых тем. Можно связать товар с возрастом, отношениями или поводом, не приписывая человеку чужие хобби. Запрещено хвалить товар абстрактно («отличный подарок», «порадует любого») без привязки к фактам профиля.
+  Хорошо (профиль «хоккей, рыбалка»): «Вы написали, что он увлекается хоккеем — большой экран удобен для просмотра матчей».
+  Плохо: «Вы написали, что он любит фильмы» или «увлекается кулинарией», если в профиле этого нет.
 - Внутри одной идеи name, keywords и pitch обязаны описывать один и тот же тип и бренд. Смешивать проектор и планшет, колонку и наушники — запрещено.
 - Если есть наблюдения по фото — это сигналы о стиле и интересах. Не предлагай то, что у человека уже есть на фото; предлагай то, что дополнит образ жизни.
 - Если в профиле есть список «не предлагай снова» — избегай этих товаров, брендов и близких аналогов той же линейки.
@@ -147,9 +148,9 @@ _SELECTION_INSTRUCTIONS = f"""Ты — эксперт по подаркам. Т�
 - Источник истины — список «Товары». Поле «Черновик идеи» может быть неточным: если оно противоречит списку товаров, игнорируй черновик.
 - offer_ids — до {_MAX_CHOSEN_OFFERS} id ТОЛЬКО из «Товары» этой же идеи. Тип товара должен совпадать с названием идеи (проектор ≠ планшет, колонка ≠ наушники). Модель/вариант тоже (Slim ≠ Pro). Если подходящих нет — пустой список. Чужие idea_index и товары других идей запрещены.
 - why_for_person, occasion_fit, practical_value, presentation_tip — только про выбранные offer_ids: называй товар так же, как в каталоге. Запрещено упоминать другой тип, другой бренд или модель не из offer_ids.
-- why_for_person — 2-3 предложения. Обязательно явно сошлись на то, что написал даритель (увлечения, описание, отношения, повод, возраст). Используй формулировки вроде «вы указали / вы написали, что…». Запрещено объяснять выбор общим качеством товара («хорошие наушники», «удобно», «порадует») без связи с фактами профиля. Если увлечения в профиле не указаны — не выдумывай интересы и не ссылайся на них.
+- why_for_person — 2-3 предложения. Ссылайся ТОЛЬКО на факты из профиля. Увлечения цитируй ДОСЛОВНО (как в блоке «Разрешённые увлечения»). Запрещено придумывать, подменять и расширять интересы: нельзя писать про фильмы/кино, готовку/кулинарию, музыку, спорт и т.п., если этого нет в профиле. Если товар слабо связан с указанными увлечениями — объясни через повод, возраст или отношения, НЕ выдумывая хобби под товар. Формулировки «вы написали / вы указали» допустимы только с дословными фактами профиля.
 - occasion_fit — 1 предложение, связанное с поводом из профиля.
-- practical_value — 1 предложение про использование именно этого товара в контексте фактов о человеке.
+- practical_value — 1 предложение про использование именно этого товара. Не приписывай человеку новые увлечения ради связки с товаром.
 - presentation_tip — 1 короткое предложение про вручение именно этого товара.
 
 Обращайся к дарителю на «вы», живым языком, без канцелярита. Цену не упоминай."""
@@ -335,7 +336,7 @@ class RecommendationService:
             primary = offers[0]
             # Название, ссылки и текст объяснения — всегда про один и тот же товар из каталога.
             item["name"] = self._display_name_from_offer(primary, fallback=idea_name)
-            choice = self._align_narrative_with_offer(item, choice, primary)
+            choice = self._align_narrative_with_offer(item, choice, primary, context=context)
             priced = [int(offer.get("price") or 0) for offer in offers if int(offer.get("price") or 0) > 0]
             item["price_estimate"] = min(priced, key=lambda value: abs(value - context.budget)) if priced else int(item["price_estimate"])
             price_note = self._price_note(item["price_estimate"], context.budget, live=True)
@@ -462,7 +463,11 @@ class RecommendationService:
             lines.append(f"Описание от дарителя (главный источник фактов):\n{freeform}")
         hobbies = c.hobbies.strip().rstrip(".")
         if hobbies:
-            lines.append(f"Увлечения и пожелания: {hobbies}.")
+            lines.append(f"Разрешённые увлечения (дословно, закрытый список): «{hobbies}».")
+            lines.append(
+                "В текстах цитируй только этот список. Не добавляй фильмы, готовку, музыку и другие темы, "
+                "которых здесь нет — даже если они «логичны» для выбранного товара."
+            )
         else:
             lines.append("Увлечения: не указаны — не придумывай интересы и не ссылайся на выдуманные хобби.")
         if c.photo_insights.strip():
@@ -616,6 +621,8 @@ class RecommendationService:
         item: dict[str, Any],
         choice: dict[str, Any] | None,
         offer: dict[str, Any],
+        *,
+        context: RecommendationContext | None = None,
     ) -> dict[str, Any]:
         """Гарантирует, что текст объяснения про тот же товар, что в ссылке/заголовке."""
         offer_title = self._display_name_from_offer(offer, fallback=item["name"])
@@ -627,9 +634,7 @@ class RecommendationService:
         if (offer_family and pitch_family not in ("", offer_family)) or (
             offer_brands and pitch_brands and not (offer_brands & pitch_brands)
         ):
-            item["pitch"] = (
-                f"{offer_title} хорошо дополняет интересы получателя и будет уместным подарком к поводу."
-            )
+            item["pitch"] = self._safe_why_for_person(offer_title, context)
             self._logger.info(
                 "Переписал pitch для '%s': исходный текст был про другой товар",
                 offer_title,
@@ -650,22 +655,98 @@ class RecommendationService:
                 for family, markers in _PRODUCT_TYPE_FAMILIES
                 if family != offer_family and any(marker in narrative.lower() for marker in markers)
             }
-            if type_mismatch or brand_mismatch or foreign_types:
+            hobby_mismatch = bool(
+                context and self._narrative_invents_hobbies(narrative, context, offer_title=offer_title)
+            )
+            if type_mismatch or brand_mismatch or foreign_types or hobby_mismatch:
                 self._logger.info(
-                    "Сбрасываю текст выбора для '%s': несогласованность типа/бренда",
+                    "Сбрасываю текст выбора для '%s': несогласованность типа/бренда/увлечений",
                     offer_title,
                 )
                 choice = None
 
+        if choice and context and self._narrative_invents_hobbies(
+            str(choice.get("why_for_person") or ""), context, offer_title=offer_title
+        ):
+            choice = {
+                **choice,
+                "why_for_person": self._safe_why_for_person(offer_title, context),
+            }
+
         if choice:
             return choice
+        pitch_text = str(item.get("pitch") or "").strip()
+        if context and (
+            not pitch_text
+            or self._narrative_invents_hobbies(pitch_text, context, offer_title=offer_title)
+        ):
+            why = self._safe_why_for_person(offer_title, context)
+        else:
+            why = pitch_text or self._safe_why_for_person(offer_title, context)
         return {
-            "why_for_person": item.get("pitch")
-            or f"{offer_title} — практичный подарок с учётом интересов и возраста получателя.",
+            "why_for_person": why,
             "occasion_fit": "Такой подарок уместен к поводу и покажет внимание к вкусам человека.",
             "practical_value": f"{offer_title} можно использовать регулярно в повседневной жизни.",
             "presentation_tip": "Вручите в красивой упаковке и коротко расскажите, почему выбрали именно это.",
         }
+
+    # Маркеры типичных «додуманных» хобби: если их нет в профиле, а в тексте есть — текст врёт.
+    _INVENTED_HOBBY_GROUPS: tuple[tuple[str, ...], ...] = (
+        ("фильм", "кино", "сериал"),
+        ("готовить", "готовит", "кулинар", "на кухне", "рецепт"),
+        ("любит музык", "увлекается музык", "музыкальн"),
+        ("танц", "хореограф"),
+        ("йог", "медитац"),
+        ("рисов", "живопис", "художеств"),
+        ("огород", "цветник", "садовод"),
+        ("вязан", "вышивк"),
+    )
+
+    @classmethod
+    def _profile_hobby_blob(cls, context: RecommendationContext) -> str:
+        return f"{context.hobbies} {context.freeform_profile} {context.photo_insights}".lower()
+
+    @classmethod
+    def _narrative_invents_hobbies(
+        cls,
+        text: str,
+        context: RecommendationContext,
+        *,
+        offer_title: str = "",
+    ) -> bool:
+        """True, если в тексте появляются темы-увлечения, которых нет в профиле."""
+        narrative = (text or "").lower()
+        if not narrative:
+            return False
+        # Название товара не считаем «выдуманным хобби».
+        title = (offer_title or "").lower()
+        if title:
+            narrative = narrative.replace(title, " ")
+        blob = cls._profile_hobby_blob(context)
+        claim_like = any(
+            marker in narrative
+            for marker in ("вы написали", "вы указали", "любит", "увлекается", "увлечение", "интересуется")
+        )
+        if not claim_like:
+            return False
+        for group in cls._INVENTED_HOBBY_GROUPS:
+            if any(marker in narrative for marker in group) and not any(marker in blob for marker in group):
+                return True
+        return False
+
+    @staticmethod
+    def _safe_why_for_person(offer_title: str, context: RecommendationContext | None) -> str:
+        if context and context.hobbies.strip():
+            return (
+                f"Вы указали интересы: {context.hobbies.strip()}. "
+                f"{offer_title} — уместный вариант с учётом этих увлечений, возраста и повода."
+            )
+        if context and context.freeform_profile.strip():
+            return (
+                f"С учётом вашего описания получателя {offer_title} "
+                f"будет практичным и уместным подарком к поводу."
+            )
+        return f"{offer_title} — практичный подарок с учётом возраста получателя и повода."
 
     @staticmethod
     def _latin_brands(text: str) -> set[str]:
