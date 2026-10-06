@@ -30,6 +30,17 @@ def make_bot() -> SimpleNamespace:
     return SimpleNamespace(container=container, delete_message=AsyncMock())
 
 
+def make_message(**kwargs) -> SimpleNamespace:
+    defaults = {
+        "bot": make_bot(),
+        "from_user": USER,
+        "answer": AsyncMock(return_value=SimpleNamespace(message_id=501)),
+        "chat": SimpleNamespace(id=USER.id),
+    }
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
 class PaymentFlowTests(unittest.TestCase):
     def run_async(self, coro):
         return asyncio.run(coro)
@@ -39,10 +50,7 @@ class PaymentFlowTests(unittest.TestCase):
             state = make_state()
             await state.set_state(SurveyStates.hobbies)
             await state.update_data(**SURVEY, pending_reco=True)
-            message = SimpleNamespace(
-                bot=make_bot(),
-                from_user=USER,
-                answer=AsyncMock(),
+            message = make_message(
                 successful_payment=SimpleNamespace(invoice_payload="stars:one_time:42:abc"),
             )
             with patch.object(start, "_emit_recommendations", AsyncMock()) as emit, patch.object(
@@ -52,6 +60,7 @@ class PaymentFlowTests(unittest.TestCase):
             emit.assert_awaited_once()
             self.assertIs(emit.await_args.args[2], USER)
             cabinet.assert_not_awaited()
+            message.bot.delete_message.assert_awaited()
             data = await state.get_data()
             self.assertEqual(data["budget"], SURVEY["budget"])
             self.assertTrue(data["paid_for_current_request"])
@@ -63,7 +72,7 @@ class PaymentFlowTests(unittest.TestCase):
         async def scenario():
             state = make_state()
             await state.update_data(**SURVEY, pending_reco=True)
-            bot_message = SimpleNamespace(bot=make_bot(), from_user=BOT_USER, answer=AsyncMock())
+            bot_message = make_message(from_user=BOT_USER)
             callback = SimpleNamespace(
                 data="paycheck:yookassa:one_time:42:abc", from_user=USER, message=bot_message, answer=AsyncMock()
             )
@@ -73,16 +82,14 @@ class PaymentFlowTests(unittest.TestCase):
                 await start.check_yookassa(callback, state)
             emit.assert_awaited_once()
             self.assertIs(emit.await_args.args[2], USER)
+            bot_message.bot.delete_message.assert_awaited()
 
         self.run_async(scenario())
 
     def test_payment_from_cabinet_opens_cabinet(self) -> None:
         async def scenario():
             state = make_state()
-            message = SimpleNamespace(
-                bot=make_bot(),
-                from_user=USER,
-                answer=AsyncMock(),
+            message = make_message(
                 successful_payment=SimpleNamespace(invoice_payload="stars:subscription:42:abc"),
             )
             with patch.object(start, "_emit_recommendations", AsyncMock()) as emit, patch.object(

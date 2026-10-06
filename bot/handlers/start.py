@@ -1437,6 +1437,17 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+async def _send_ephemeral_payment_success(message: Message, text: str) -> None:
+    """Кратко показать успех оплаты и убрать сообщение из чата."""
+    sent = await message.answer(text)
+    await asyncio.sleep(2)
+    await _safe_delete_message(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        message_id=getattr(sent, "message_id", None),
+    )
+
+
 @router.pre_checkout_query()
 async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery) -> None:
     await pre_checkout_query.answer(ok=True)
@@ -1454,12 +1465,11 @@ async def successful_payment(message: Message, state: FSMContext) -> None:
     if kind == "subscription":
         payment_service.grant_subscription(message.from_user.id)
         await state.update_data(paid_for_current_request=False)
-        await message.answer(texts.PAYMENT_SUCCESS_SUBSCRIPTION)
+        await _send_ephemeral_payment_success(message, texts.PAYMENT_SUCCESS_SUBSCRIPTION)
     else:
         payment_service.grant_one_time_request(message.from_user.id)
         await state.update_data(paid_for_current_request=True)
-        await message.answer(texts.PAYMENT_SUCCESS_ONE_TIME)
-    await asyncio.sleep(0.5)
+        await _send_ephemeral_payment_success(message, texts.PAYMENT_SUCCESS_ONE_TIME)
     await _resume_after_payment(message, state, message.from_user)
 
 
@@ -1563,11 +1573,10 @@ async def check_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
     if kind == "subscription":
         payment_service.grant_subscription(callback.from_user.id)
         await state.update_data(paid_for_current_request=False)
-        await callback.message.answer(texts.PAYMENT_SUCCESS_SUBSCRIPTION)
+        await _send_ephemeral_payment_success(callback.message, texts.PAYMENT_SUCCESS_SUBSCRIPTION)
     else:
         payment_service.grant_one_time_request(callback.from_user.id)
         await state.update_data(paid_for_current_request=True)
-        await callback.message.answer(texts.PAYMENT_SUCCESS_ONE_TIME)
+        await _send_ephemeral_payment_success(callback.message, texts.PAYMENT_SUCCESS_ONE_TIME)
     await callback.answer()
-    await asyncio.sleep(0.5)
     await _resume_after_payment(callback.message, state, callback.from_user)
