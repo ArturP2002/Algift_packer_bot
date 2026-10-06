@@ -27,7 +27,7 @@ def make_bot() -> SimpleNamespace:
     payment_service.get_one_time_price_rub.return_value = 149
     payment_service.get_one_time_price_stars.return_value = 149
     container = SimpleNamespace(payment_service=payment_service, repository=repository)
-    return SimpleNamespace(container=container)
+    return SimpleNamespace(container=container, delete_message=AsyncMock())
 
 
 class PaymentFlowTests(unittest.TestCase):
@@ -112,7 +112,12 @@ class RecommendationFailureFlowTests(unittest.TestCase):
             bot.container.repository.get_or_create_user.return_value = SimpleNamespace(id=1, telegram_id=USER.id)
             bot.container.repository.recent_recommendation_names.return_value = []
             bot.container.repository.recent_downvoted_names.return_value = []
-            message = SimpleNamespace(bot=bot, from_user=USER, answer=AsyncMock())
+            message = SimpleNamespace(
+                bot=bot,
+                from_user=USER,
+                answer=AsyncMock(return_value=SimpleNamespace(message_id=150)),
+                chat=SimpleNamespace(id=USER.id),
+            )
             await start._emit_recommendations(message, state)
             bot.container.payment_service.consume_request.assert_not_called()
             last_call = message.answer.await_args_list[-1]
@@ -195,7 +200,12 @@ class RecommendationFailureFlowTests(unittest.TestCase):
                 )
             )
             bot.container.gpt_service = MagicMock()
-            message = SimpleNamespace(bot=bot, from_user=USER, answer=AsyncMock(), chat=SimpleNamespace(id=USER.id))
+            message = SimpleNamespace(
+                bot=bot,
+                from_user=USER,
+                answer=AsyncMock(return_value=SimpleNamespace(message_id=200)),
+                chat=SimpleNamespace(id=USER.id),
+            )
             with patch.object(start, "_save_recommendations", return_value=[11]):
                 await start._emit_recommendations(message, state)
             bot.container.repository.mark_free_quick_used.assert_called_once_with(db_user)

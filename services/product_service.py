@@ -408,6 +408,49 @@ class ProductService:
             for product in ordered
         ]
 
+    def find_similar_offers(
+        self,
+        *,
+        name: str,
+        keywords: list[str],
+        exclude_urls: set[str] | None = None,
+        max_offers: int = 5,
+        limit_per_market: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Похожие товары: тот же тип/бренд, но не текущая модель."""
+        exclude_urls = {url for url in (exclude_urls or set()) if url}
+        source_name = (name or "").strip()
+        source_model = _model_tokens(source_name) if source_name else frozenset()
+        source_norm = normalize_title(source_name) if source_name else ""
+
+        search_keywords = [str(k).strip() for k in keywords if str(k).strip()]
+        # Точное имя даёт тот же SKU первым — ищем по keywords / укороченному запросу.
+        if not search_keywords and source_name:
+            search_keywords = [source_name]
+        if not search_keywords:
+            return []
+
+        # Берём с запасом, чтобы после фильтра текущего товара остались варианты.
+        pool = self.find_offers(
+            search_keywords,
+            max_offers=max(max_offers * 4, 12),
+            limit_per_market=max(limit_per_market * 2, 4),
+        )
+        similar: list[dict[str, Any]] = []
+        for offer in pool:
+            url = str(offer.get("url") or "").strip()
+            if url and url in exclude_urls:
+                continue
+            title = str(offer.get("title") or "").strip()
+            if source_norm and normalize_title(title) == source_norm:
+                continue
+            if source_model and _similarity(source_model, _model_tokens(title)) >= _DUPLICATE_SIMILARITY:
+                continue
+            similar.append(offer)
+            if len(similar) >= max_offers:
+                break
+        return similar
+
     @staticmethod
     def _pick_diverse(scored: list[tuple[float, AffiliateProduct]], limit: int) -> list[AffiliateProduct]:
         """Лучшее совпадение + самый дешёвый и самый дорогой из близких по релевантности, без дублей по модели."""

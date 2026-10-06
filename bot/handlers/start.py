@@ -286,14 +286,22 @@ async def _delete_user_input(message: Message) -> None:
         pass
 
 
+async def _safe_delete_message(*, bot, chat_id: int, message_id: int | None) -> None:
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramBadRequest:
+        pass
+
+
 async def _clear_screen(*, state: FSMContext, source_message: Message) -> None:
     data = await state.get_data()
-    screen_message_id = data.get("screen_message_id")
-    if screen_message_id:
-        try:
-            await source_message.bot.delete_message(chat_id=source_message.chat.id, message_id=screen_message_id)
-        except TelegramBadRequest:
-            pass
+    await _safe_delete_message(
+        bot=source_message.bot,
+        chat_id=source_message.chat.id,
+        message_id=data.get("screen_message_id"),
+    )
     await state.update_data(screen_message_id=None)
 
 
@@ -1023,7 +1031,9 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
         photo_insights=photo_insights,
         exclude_names=exclude_names,
     )
-    await message.answer(texts.GENERATING)
+    # Убираем вопрос про хобби (и прочий screen), затем шлём временный статус.
+    await _clear_screen(state=state, source_message=message)
+    generating = await message.answer(texts.GENERATING)
     try:
         items = await recommendation_service.get_recommendations(context)
     except RecommendationUnavailable:
@@ -1042,7 +1052,6 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
         await message.answer(
             "Нашел меньше вариантов, чем обычно: показываю только идеи, которые есть в каталоге и попали в ваш бюджет."
         )
-    await message.answer(texts.BUDGET_NOTE)
     await _send_carousel(
         message=message,
         state=state,
@@ -1050,6 +1059,7 @@ async def _emit_recommendations_locked(message: Message, state: FSMContext, user
         item_ids=shown_ids,
         index=0,
     )
+    await _safe_delete_message(bot=message.bot, chat_id=message.chat.id, message_id=generating.message_id)
     if data.get("mode") == "quick":
         await message.answer(texts.UPSELL_QUICK, reply_markup=photo_upsell_keyboard())
 
@@ -1112,6 +1122,7 @@ def _format_item_text(item: dict) -> str:
         text += texts.ITEM_LINKS_HINT
     else:
         text += texts.ITEM_NO_LINKS_HINT
+    text += f"\n\n{texts.BUDGET_NOTE}"
     return text
 
 
@@ -1259,14 +1270,17 @@ async def carousel_actions(callback: CallbackQuery, state: FSMContext) -> None:
         await _emit_recommendations(callback.message, state, callback.from_user)
         return
     if action == "edit":
-        await state.set_state(SurveyStates.edit_conditions)
-        await _render_screen(
-            state=state,
-            source_message=callback.message,
-            text=texts.ASK_EDIT_CONDITIONS,
-            reply_markup=back_only_keyboard(),
-        )
         await callback.answer()
+        await state.set_state(SurveyStates.edit_conditions)
+        # Редактируем именно карточку, на которой нажали — иначе prompt может уйти
+        # в старый screen_message_id далеко выше и кнопка «молчит».
+        try:
+            await callback.message.edit_text(texts.ASK_EDIT_CONDITIONS, reply_markup=back_only_keyboard())
+            await state.update_data(screen_message_id=callback.message.message_id)
+        except TelegramBadRequest:
+            await _clear_screen(state=state, source_message=callback.message)
+            sent = await callback.message.answer(texts.ASK_EDIT_CONDITIONS, reply_markup=back_only_keyboard())
+            await state.update_data(screen_message_id=sent.message_id)
         return
     if action == "similar":
         if not isinstance(items, list) or not items:
@@ -1274,8 +1288,8 @@ async def carousel_actions(callback: CallbackQuery, state: FSMContext) -> None:
             return
         index = index % len(items)
         item = items[index]
-        await _send_similar_products(callback.message, item)
         await callback.answer()
+        await _send_similar_products(callback.message, item)
         return
     await callback.answer()
 
@@ -1338,13 +1352,14 @@ async def _send_similar_products(message: Message, item: dict) -> None:
         keywords = []
     name = str(item.get("name") or "").strip()
     search_keywords = [str(k).strip() for k in keywords if str(k).strip()]
-    if name:
-        search_keywords = [name, *search_keywords]
+    category = str(item.get("category") or "").strip()
+    if category and category.lower() not in {k.lower() for k in search_keywords}:
+        search_keywords.append(category)
+    if not search_keywords and name:
+        search_keywords = [name]
     if not search_keywords:
         await message.answer(texts.SIMILAR_EMPTY)
         return
-    offers = product_service.find_offers(search_keywords, max_offers=5, limit_per_market=2)
-    # Исключаем точные URL уже показанных офферов текущего подарка.
     existing_urls = {
         str(offer.get("url") or "").strip()
         for group in (item.get("links") or [])
@@ -1352,10 +1367,14 @@ async def _send_similar_products(message: Message, item: dict) -> None:
         for offer in (group.get("offers") or [])
         if isinstance(offer, dict)
     }
-    filtered = [offer for offer in offers if str(offer.get("url") or "").strip() not in existing_urls]
-    if not filtered:
-        # Без исключения — лучше показать хоть что-то из той же категории.
-        filtered = offers
+    existing_urls.discard("")
+    filtered = product_service.find_similar_offers(
+        name=name,
+        keywords=search_keywords,
+        exclude_urls=existing_urls,
+        max_offers=5,
+        limit_per_market=2,
+    )
     if not filtered:
         await message.answer(texts.SIMILAR_EMPTY)
         return

@@ -237,9 +237,8 @@ def reuse_survey_keyboard() -> InlineKeyboardMarkup:
 
 
 def photo_upsell_keyboard() -> InlineKeyboardMarkup:
-    return with_back(
-        [[InlineKeyboardButton(text="🔍 Подбор с фото", callback_data="upsell:photo")]],
-        back_cb=HOME_CB,
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔍 Подбор с фото", callback_data="upsell:photo")]]
     )
 
 

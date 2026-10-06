@@ -97,6 +97,49 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(offers[0]["label"].startswith("Apple iPhone"))
         self.assertNotIn("М.Видео", offers[0]["label"])
 
+    def test_similar_offers_exclude_same_product(self) -> None:
+        AffiliateProduct.create(
+            source="manual",
+            external_id="1",
+            title="Парфюмерная вода Amouage Interlude Black Iris Man",
+            title_norm="парфюмерная вода amouage interlude black iris man",
+            price=50952,
+            marketplace="goldapple",
+            tracking_link="https://example.com/amouage-iris",
+            updated_at=datetime.utcnow(),
+        )
+        AffiliateProduct.create(
+            source="manual",
+            external_id="2",
+            title="Парфюмерная вода Amouage Reflection Man",
+            title_norm="парфюмерная вода amouage reflection man",
+            price=42000,
+            marketplace="goldapple",
+            tracking_link="https://example.com/amouage-reflection",
+            updated_at=datetime.utcnow(),
+        )
+        AffiliateProduct.create(
+            source="manual",
+            external_id="3",
+            title="Парфюмерная вода Amouage Lyric Man",
+            title_norm="парфюмерная вода amouage lyric man",
+            price=39000,
+            marketplace="goldapple",
+            tracking_link="https://example.com/amouage-lyric",
+            updated_at=datetime.utcnow(),
+        )
+        similar = ProductService().find_similar_offers(
+            name="Парфюмерная вода Amouage Interlude Black Iris Man",
+            keywords=["парфюм amouage", "мужской парфюм amouage"],
+            exclude_urls={"https://example.com/amouage-iris"},
+            max_offers=5,
+        )
+        urls = {offer["url"] for offer in similar}
+        self.assertNotIn("https://example.com/amouage-iris", urls)
+        self.assertTrue(urls)
+        self.assertTrue(all("amouage" in offer["title"].lower() for offer in similar))
+        self.assertFalse(any("interlude black iris" in offer["title"].lower() for offer in similar))
+
     def test_cache_key_determinism(self) -> None:
         cache = CacheService(ttl_seconds=100)
         payload = {
